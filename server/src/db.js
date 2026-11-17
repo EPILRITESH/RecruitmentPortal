@@ -16,6 +16,7 @@ export function useD1(d1) {
       return { changes: r.meta?.changes ?? 0, lastInsertRowid: r.meta?.last_row_id };
     },
     async exec(sqlText) { await d1.exec(sqlText.replace(/--[^\n]*\n/g, '\n').replace(/\s*\n\s*/g, ' ')); },
+    async batch(list) { if (list.length) await d1.batch(list.map(([sql, params]) => d1.prepare(sql).bind(...params))); },
   };
 }
 
@@ -31,6 +32,10 @@ export async function useNodeSqlite(file) {
     async get(sql, params) { return conv(db.prepare(sql).get(...params)); },
     async run(sql, params) { const r = db.prepare(sql).run(...params); return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) }; },
     async exec(sqlText) { db.exec(sqlText); },
+    async batch(list) {
+      db.exec('BEGIN');
+      try { for (const [sql, params] of list) db.prepare(sql).run(...params); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
+    },
   };
   return db;
 }
@@ -45,6 +50,10 @@ export const all = (sql, ...params) => d().all(sql, clean(params));
 export const get = (sql, ...params) => d().get(sql, clean(params));
 export const run = (sql, ...params) => d().run(sql, clean(params));
 export const exec = (sqlText) => d().exec(sqlText);
+/** Many writes in one round trip (D1 batch = one subrequest, atomic). list: [[sql, ...params], ...] */
+export async function batch(list) {
+  for (let i = 0; i < list.length; i += 80) await d().batch(list.slice(i, i + 80).map(([sql, ...params]) => [sql, clean(params)]));
+}
 export const dbKind = () => driver?.kind;
 
 // D1 has no interactive transactions; steps are written in a safe order instead.

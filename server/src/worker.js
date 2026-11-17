@@ -20,7 +20,7 @@ else useD1Files(env.DB);
 const app = createApp();
 
 // Serve the React app: exact file, else index.html (single-page app routes like /tasks)
-app.get(/^\/(?!api\/).*/, (req, res) => {
+app.get(/^\/(?!api\/|iclock\/).*/, (req, res) => {
   const f = STATIC[req.path] || STATIC['/index.html'];
   res.setHeader('Content-Type', f.type);
   res.setHeader('Cache-Control', req.path.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache');

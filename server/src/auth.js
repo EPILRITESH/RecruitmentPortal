@@ -21,7 +21,8 @@ export const ROLES = {
   approver: 'Approver (Ritesh Sir – hold decisions)',
   hod: 'HOD / Manager (raise requirement, approve JD)',
   ea: 'EA (MIS scoring)',
-  accounts: 'Accounts (agency payment)',
+  accounts: 'Accounts (agency payment, payroll)',
+  employee: 'Employee (self-service: attendance, leave, salary slip)',
 };
 
 // PBKDF2-SHA256 (native crypto, fast enough for Workers CPU limits)
@@ -42,6 +43,8 @@ export function checkPassword(p, stored) {
 }
 export const signToken = async (u) => jwt.sign({ id: u.id, role: u.role }, await secret(), { expiresIn: '7d' });
 
+const EMPLOYEE_ALLOWED = /^\/api\/(me(\/.*)?|leaves\/\d+\/cancel|payslips\/\d+|files\/[\w.-]+)$/;
+
 export async function requireAuth(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : req.query.token;
@@ -56,6 +59,8 @@ export async function requireAuth(req, res, next) {
     const u = await get('SELECT id, name, email, phone, role, active FROM users WHERE id=?', p.id);
     if (!u || !u.active) return res.status(401).json({ error: 'User disabled' });
     req.user = u;
+    // employees (self-service logins) only reach their own data
+    if (u.role === 'employee' && !EMPLOYEE_ALLOWED.test(req.originalUrl.split('?')[0])) return res.status(403).json({ error: 'Not allowed for your role' });
     next();
   } catch (e) { next(e); }
 }

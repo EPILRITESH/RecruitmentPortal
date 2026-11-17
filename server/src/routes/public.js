@@ -73,6 +73,17 @@ r.post('/inbound/:token', upload.single('resume'), async (req, res) => {
   res.json({ ok: true, ...out });
 });
 
+// ---- attendance punches from any system (eSSL eTimeTrack, BioTime, Matrix, Realtime, a sync agent, Zapier…) ----
+// POST /api/public/punch/<token>  JSON: {"punches":[{"biometric_id":"101","time":"2026-11-17 09:02:11","device":"Gate 1"}]}  (max 500 per call)
+r.post('/punch/:token', async (req, res) => {
+  const token = await setting('attendance_token');
+  if (!token || req.params.token !== token) throw httpError(401, 'Invalid token');
+  const list = Array.isArray(req.body) ? req.body : req.body?.punches || (req.body?.biometric_id ? [req.body] : []);
+  if (list.length > 500) throw httpError(400, 'Send at most 500 punches per call');
+  const { ingestPunches } = await import('../hr/attendance.js');
+  res.json(await ingestPunches(list, { source: 'api', device: req.body?.device || null }));
+});
+
 // ---- joinee feedback (Step 20) ----
 r.get('/feedback/:token', async (req, res) => {
   const c = await get(`SELECT c.name, r.designation, r.company FROM candidates c LEFT JOIN requirements r ON r.id=c.requirement_id WHERE c.apply_token=?`, req.params.token);

@@ -9,7 +9,9 @@ const r = Router();
 
 r.post('/auth/login', async (req, res) => {
   const { email, password } = req.body || {};
-  const u = await get('SELECT * FROM users WHERE lower(email)=lower(?)', email || '');
+  const id = String(email || '').trim();
+  const digits = id.replace(/\D/g, '');
+  const u = await get(`SELECT * FROM users WHERE lower(email)=lower(?) OR (? <> '' AND length(?) >= 10 AND substr(replace(phone,' ',''), -10) = substr(?, -10)) ORDER BY id LIMIT 1`, id, digits, digits, digits);
   if (!u || !u.active || !checkPassword(password || '', u.password_hash)) return res.status(401).json({ error: 'Wrong email or password' });
   if (u.password_hash.startsWith('$2')) await run('UPDATE users SET password_hash=? WHERE id=?', hashPassword(password), u.id); // upgrade old hash
   res.json({ token: await signToken(u), user: { id: u.id, name: u.name, email: u.email, role: u.role } });

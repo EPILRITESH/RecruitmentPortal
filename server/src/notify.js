@@ -29,6 +29,24 @@ export const DEFAULT_TEMPLATES = [
     body: 'Dear Sir,\n\nCandidate {{name}} ({{code}}) for {{designation}} – {{company}} is on HOLD after the interview.\nPlease decide in the portal: {{portal_link}}\n\nRemark: {{remark}}\n\n– Recruitment Portal' },
   { key: 'new_requirement', name: 'New requirement raised (to recruiter)', channel: 'email', subject: 'New requirement {{code}} – {{designation}} ({{company}})',
     body: 'A new requirement has been raised.\n\n{{code}} – {{designation}} at {{company}}\nSalary: {{salary}} | Openings: {{openings}}\nRequested by: {{requirement_by}}\n\nOpen in portal: {{portal_link}}' },
+  { key: 'leave_applied_email', name: 'Leave request – to approver (email)', channel: 'email', subject: 'Leave request – {{employee}} ({{leave_type}}, {{days}} day)',
+    body: 'Leave request from {{employee}} ({{emp_code}}, {{department}}).\n\nType: {{leave_type}}\nDates: {{from_date}} to {{to_date}} ({{days}} day)\nReason: {{reason}}\n\nApprove or reject: {{portal_link}}' },
+  { key: 'leave_applied_wa', name: 'Leave request – to approver (WhatsApp)', channel: 'whatsapp', subject: '',
+    body: 'Leave request: *{{employee}}* ({{department}}) – {{leave_type}} {{from_date}} to {{to_date}} ({{days}} day). Reason: {{reason}}. Approve here: {{portal_link}}' },
+  { key: 'leave_decision_wa', name: 'Leave approved / rejected – to employee (WhatsApp)', channel: 'whatsapp', subject: '',
+    body: 'Hello {{employee}}, your {{leave_type}} from {{from_date}} to {{to_date}} ({{days}} day) is *{{status}}*. {{remark}} – HR' },
+  { key: 'leave_decision_email', name: 'Leave approved / rejected – to employee (email)', channel: 'email', subject: 'Your leave request is {{status}}',
+    body: 'Dear {{employee}},\n\nYour {{leave_type}} request from {{from_date}} to {{to_date}} ({{days}} day) has been {{status}}.\n{{remark}}\n\nRegards,\nHR Team' },
+  { key: 'payslip_wa', name: 'Salary slip ready (WhatsApp)', channel: 'whatsapp', subject: '',
+    body: 'Hello {{employee}}, your salary slip for *{{month}}* is ready. Net pay: ₹{{net}} (paid days {{paid_days}}). View: {{portal_link}} – HR' },
+  { key: 'payslip_email', name: 'Salary slip ready (email)', channel: 'email', subject: 'Salary slip – {{month}}',
+    body: 'Dear {{employee}},\n\nYour salary slip for {{month}} is ready.\n\nPaid days: {{paid_days}}\nGross earnings: ₹{{gross}}\nDeductions: ₹{{deductions}}\nNet pay: ₹{{net}}\n\nView / download: {{portal_link}}\n\nRegards,\nHR Team' },
+  { key: 'attendance_request_email', name: 'Attendance correction request – to HR', channel: 'email', subject: 'Attendance correction – {{employee}} ({{date}})',
+    body: '{{employee}} ({{emp_code}}) asked to correct attendance for {{date}}: In {{in_time}} / Out {{out_time}}.\nReason: {{reason}}\n\nReview: {{portal_link}}' },
+  { key: 'missed_punch_wa', name: 'Missed punch alert – to employee', channel: 'whatsapp', subject: '',
+    body: 'Hello {{employee}}, your attendance for {{date}} shows {{status_text}}. If you were working, please raise a correction request in the portal: {{portal_link}} – HR' },
+  { key: 'absent_digest', name: 'Daily attendance summary – to HR', channel: 'email', subject: 'Attendance {{date}} – {{absent}} absent, {{missed}} missed punch',
+    body: 'Attendance for {{date}}\n\nPresent: {{present}} | Absent: {{absent}} | On leave: {{leave}} | Missed punch: {{missed}} | Late: {{late}}\n\nAbsent:\n{{absent_list}}\n\nMissed punch:\n{{missed_list}}\n\nOpen attendance: {{portal_link}}' },
   { key: 'daily_digest', name: 'Daily task digest (to each doer)', channel: 'email', subject: 'Your recruitment tasks – {{today}}',
     body: 'Good morning {{doer}},\n\nYou have {{overdue}} overdue and {{due}} due-today steps.\n\n{{list}}\n\nOpen My Tasks: {{portal_link}}/tasks' },
 ];
@@ -65,10 +83,10 @@ export function waNumber(mobile) {
 }
 
 async function logMessage(m) {
-  const r = await run(`INSERT INTO messages(candidate_id, channel, to_addr, subject, body, template, status, error, user_id, created_at, automation, link, sent_at, related_type, related_id)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  const r = await run(`INSERT INTO messages(candidate_id, channel, to_addr, subject, body, template, status, error, user_id, created_at, automation, link, sent_at, related_type, related_id, employee_id)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     m.candidate_id ?? null, m.channel, m.to, m.subject ?? null, m.body, m.template ?? null, m.status, m.error ?? null, m.user?.id ?? null, now(),
-    m.automation ?? null, m.link ?? null, m.status === 'sent' ? now() : null, m.related_type ?? null, m.related_id ?? null);
+    m.automation ?? null, m.link ?? null, m.status === 'sent' ? now() : null, m.related_type ?? null, m.related_id ?? null, m.employee_id ?? null);
   return Number(r.lastInsertRowid);
 }
 
@@ -83,7 +101,7 @@ export async function emailConfigured() {
 }
 
 /** Deliver one WhatsApp message now (Cloud API) or keep it in the Outbox with a wa.me link. */
-export async function sendWhatsApp({ to, body, candidate_id, template, user, automation, queueIfManual = false, related_type, related_id }) {
+export async function sendWhatsApp({ to, body, candidate_id, employee_id, template, user, automation, queueIfManual = false, related_type, related_id }) {
   const number = waNumber(to);
   if (!number) throw Object.assign(new Error('Mobile number missing'), { status: 400 });
   const link = `https://wa.me/${number}?text=${encodeURIComponent(body)}`;
@@ -101,7 +119,7 @@ export async function sendWhatsApp({ to, body, candidate_id, template, user, aut
       status = 'sent';
     } catch (e) { status = queueIfManual ? 'queued' : 'failed'; error = e.message; }
   }
-  const id = await logMessage({ candidate_id, channel: 'whatsapp', to: number, body, template, status, error, user, automation, link, related_type, related_id });
+  const id = await logMessage({ candidate_id, employee_id, channel: 'whatsapp', to: number, body, template, status, error, user, automation, link, related_type, related_id });
   return { id, status, link: status === 'sent' ? null : link, error };
 }
 
@@ -139,7 +157,7 @@ async function deliverEmail({ to, subject, body }) {
 }
 
 /** Send an email now, or keep it in the Outbox (with a mailto link) when no provider is set. */
-export async function sendEmail({ to, subject, body, candidate_id, template, user, automation, queueIfManual = false, related_type, related_id }) {
+export async function sendEmail({ to, subject, body, candidate_id, employee_id, template, user, automation, queueIfManual = false, related_type, related_id }) {
   if (!to) throw Object.assign(new Error('Email address missing'), { status: 400 });
   const link = `mailto:${to}?subject=${encodeURIComponent(subject || '')}&body=${encodeURIComponent(body)}`;
   let status = 'queued';
@@ -149,7 +167,7 @@ export async function sendEmail({ to, subject, body, candidate_id, template, use
   } else {
     error = 'Email provider not set – send from the Outbox';
   }
-  const id = await logMessage({ candidate_id, channel: 'email', to, subject, body, template, status, error, user, automation, link, related_type, related_id });
+  const id = await logMessage({ candidate_id, employee_id, channel: 'email', to, subject, body, template, status, error, user, automation, link, related_type, related_id });
   return { id, status, error, mailto: status === 'sent' ? null : link };
 }
 

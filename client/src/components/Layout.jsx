@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard, ListChecks, Siren, ClipboardList, Users, UserCheck, Bot, BarChart3, Wallet, Settings, BookOpen, LogOut, Menu, X, Globe, PieChart, Table2, Send,
+  IdCard, Fingerprint, CalendarDays, IndianRupee, SlidersHorizontal, UserRound,
 } from 'lucide-react';
 import { api, auth, ROLE_LABEL } from '../api';
 
@@ -20,6 +21,14 @@ const NAV = [
   { to: '/ai', label: 'AI Agents', icon: Bot },
   { to: '/reports', label: 'Reports & MIS', icon: BarChart3 },
   { to: '/payments', label: 'Payments', icon: Wallet },
+  { section: 'HR & Payroll', hr: true },
+  { to: '/hr/employees', label: 'Employees', icon: IdCard, hr: true },
+  { to: '/hr/attendance', label: 'Attendance', icon: Fingerprint, hr: true },
+  { to: '/hr/leave', label: 'Leave', icon: CalendarDays, badge: 'leave' },
+  { to: '/hr/payroll', label: 'Payroll & salary slips', icon: IndianRupee, hr: true },
+  { to: '/hr/settings', label: 'HR settings', icon: SlidersHorizontal, hr: true },
+  { section: 'Me' },
+  { to: '/me', label: 'My attendance & leave', icon: UserRound, self: true },
   { section: 'Help' },
   { to: '/guide', label: 'Process Guide', icon: BookOpen },
   { to: '/settings', label: 'Settings', icon: Settings, admin: true },
@@ -34,7 +43,9 @@ export default function Layout() {
 
   useEffect(() => {
     setOpen(false);
-    api('/tasks/summary').then((s) => setCounts((c) => ({ ...c, tasks: s.overdue + s.today, overdue: s.overdue }))).catch(() => {});
+    if (user?.role !== 'employee') api('/tasks/summary').then((s) => setCounts((c) => ({ ...c, tasks: s.overdue + s.today, overdue: s.overdue }))).catch(() => {});
+    if (user?.role === 'employee') return;
+    api('/leave-approvals').then((l) => setCounts((c) => ({ ...c, leave: l.length }))).catch(() => {});
     api('/outbox?status=queued').then((o) => setCounts((c) => ({ ...c, outbox: o.counts.find((x) => x.status === 'queued')?.n || 0 }))).catch(() => {});
   }, [loc.pathname]);
 
@@ -45,12 +56,18 @@ export default function Layout() {
       <div className="flex items-center gap-2.5 px-5 py-5">
         <div className="grid h-9 w-9 place-items-center rounded-lg bg-indigo-500 font-bold text-white">R</div>
         <div>
-          <div className="text-sm font-semibold text-white">EPIL Recruitment</div>
-          <div className="text-[11px] text-slate-400">FMS-26 Portal</div>
+          <div className="text-sm font-semibold text-white">EPIL HR Portal</div>
+          <div className="text-[11px] text-slate-400">Recruitment · Attendance · Payroll</div>
         </div>
       </div>
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 pb-4">
-        {NAV.filter((n) => !n.admin || user?.role === 'admin').map((n, i) => n.section ? (
+        {NAV.filter((n) => {
+          const role = user?.role;
+          if (role === 'employee') return n.self || n.section === 'Me';
+          if (n.admin) return role === 'admin';
+          if (n.hr) return ['admin', 'hr', 'accounts'].includes(role);
+          return true;
+        }).map((n, i) => n.section ? (
           <div key={i} className="px-3 pb-1 pt-4 text-[11px] font-semibold uppercase tracking-wider text-slate-500">{n.section}</div>
         ) : (
           <NavLink key={n.to} to={n.to} end={n.end}

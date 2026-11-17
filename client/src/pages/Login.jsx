@@ -42,9 +42,9 @@ export default function Login() {
         <form onSubmit={submit} className="w-full max-w-sm space-y-4">
           <div>
             <h2 className="text-2xl font-semibold text-slate-900">Sign in</h2>
-            <p className="text-sm text-slate-500">Use your portal email and password.</p>
+            <p className="text-sm text-slate-500">Staff: use your email. Employees: use your mobile number.</p>
           </div>
-          <Field label="Email"><input className="input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required /></Field>
+          <Field label="Email or mobile number"><input className="input" type="text" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} autoFocus required /></Field>
           <Field label="Password"><input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></Field>
           <ErrorBox error={error} />
           <Button className="w-full" loading={busy}>Sign in</Button>

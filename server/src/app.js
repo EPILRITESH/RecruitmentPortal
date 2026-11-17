@@ -14,8 +14,10 @@ import reportRoutes from './routes/reports.js';
 import jobRoutes, { seedPlatforms } from './routes/jobs.js';
 import misRoutes from './routes/mis.js';
 import publicRoutes from './routes/public.js';
+import hrRoutes, { seedHR } from './routes/hr.js';
+import { parseAttlog, deviceSeen, ingestPunches } from './hr/attendance.js';
 
-const SEED_VERSION = '2';
+const SEED_VERSION = '3';
 let ready = null;
 /** Seeding / upgrades (steps, templates, platforms, automations, default users). Runs once per process/isolate. */
 export function ensureReady() {
@@ -27,6 +29,7 @@ export function ensureReady() {
     await seedTemplates();
     await seedPlatforms();
     await seedAutomations();
+    await seedHR();
     if (!(await setting('inbound_token'))) await setSetting('inbound_token', crypto.randomBytes(12).toString('hex'));
     if (!(await get('SELECT id FROM users LIMIT 1'))) await bootstrap();
     await repairStuckCandidates();
@@ -55,6 +58,31 @@ export function createApp() {
   });
 
   app.get('/api/health', (req, res) => res.json({ ok: true }));
+
+  // ZKTeco / eSSL biometric "ADMS / Cloud server" push protocol. On the device set
+  // Server address = this portal's host, port 80 (HTTP) or 443 (HTTPS if the device supports it).
+  app.use('/iclock', express.text({ type: '*/*', limit: '2mb' }));
+  app.get('/iclock/cdata', async (req, res) => {
+    const sn = String(req.query.SN || '');
+    if (!sn) return res.type('text/plain').send('ERROR');
+    await deviceSeen(sn, req.headers['cf-connecting-ip']);
+    res.type('text/plain').send([`GET OPTION FROM: ${sn}`, 'ATTLOGStamp=None', 'OPERLOGStamp=9999', 'ATTPHOTOStamp=None', 'ErrorDelay=30', 'Delay=10',
+      'TransTimes=00:00;14:05', 'TransInterval=1', 'TransFlag=TransData AttLog', 'TimeZone=5.5', 'Realtime=1', 'Encrypt=None', ''].join('\n'));
+  });
+  app.post('/iclock/cdata', async (req, res) => {
+    const sn = String(req.query.SN || '');
+    const dev = await deviceSeen(sn, req.headers['cf-connecting-ip']);
+    if (String(req.query.table || '').toUpperCase() !== 'ATTLOG') return res.type('text/plain').send('OK');
+    const list = parseAttlog(typeof req.body === 'string' ? req.body : '');
+    if (dev.active) {
+      await ingestPunches(list, { source: 'device', device: dev.name });
+      await run('UPDATE devices SET punches=punches+? WHERE id=?', list.length, dev.id);
+    }
+    // an unapproved device is acknowledged but its punches are ignored until HR approves it
+    res.type('text/plain').send(`OK: ${list.length}`);
+  });
+  app.get('/iclock/getrequest', async (req, res) => { if (req.query.SN) await deviceSeen(String(req.query.SN), req.headers['cf-connecting-ip']); res.type('text/plain').send('OK'); });
+  app.post('/iclock/devicecmd', (req, res) => res.type('text/plain').send('OK'));
   app.use('/api/public', publicRoutes);
   app.get('/api/files/:name', requireAuth, async (req, res) => {
     const f = await readUpload(req.params.name);
@@ -67,6 +95,7 @@ export function createApp() {
   app.use('/api', reportRoutes);
   app.use('/api', misRoutes);
   app.use('/api', jobRoutes);
+  app.use('/api', hrRoutes);
   app.use('/api', recruitRoutes);
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
   return app;

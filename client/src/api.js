@@ -52,5 +52,5 @@ export function relTime(s) {
 export const inr = (n) => (n == null ? '—' : `₹${Number(n).toLocaleString('en-IN')}`);
 
 export const ROLE_LABEL = {
-  admin: 'Admin', recruiter: 'Recruiter', hr: 'HR – Onboarding', pc: 'PC (Verification)', approver: 'Approver', hod: 'HOD / Manager', ea: 'EA – MIS', accounts: 'Accounts',
+  admin: 'Admin', recruiter: 'Recruiter', hr: 'HR', pc: 'PC (Verification)', approver: 'Approver', hod: 'HOD / Manager', ea: 'EA – MIS', accounts: 'Accounts', employee: 'Employee',
 };

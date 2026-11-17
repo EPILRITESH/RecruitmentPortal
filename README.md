@@ -111,6 +111,22 @@ Posting marks **Step 1 (JD)** and **Step 2 (enquiry posted)** done with the actu
 
 Every number opens the list of names behind it.
 
+
+## 2c. HR: employees, attendance, leave, payroll (added Nov 2026)
+
+| Area | What it does |
+|---|---|
+| **Employees** (HR & Payroll → Employees) | Employee master: company, department, shift, biometric ID, salary (monthly / daily / hourly), PF / ESIC / PT, bank, PAN, UAN. Excel import (existing code = update). Recruitment joinees (Step 15 = Joined) become employees automatically. Headcount by company / department. |
+| **Biometric attendance** | (1) ZKTeco / eSSL machines with the *ADMS / Cloud server* option push punches straight to `/iclock/cdata` (approve the machine once). (2) Any other software or a sync script can POST punches to the private URL shown in Attendance → Machines & integration. (3) Excel / CSV import of punch logs or daily in/out sheets. (4) HR can edit any day. |
+| **Daily processing** | Per shift: first in / last out, worked hours, late (with grace), early going, overtime (after shift end + N minutes, rounded), half day / full day thresholds, missed punch, weekly off, holiday, approved leave, night shifts. Runs on every punch and hourly; yesterday is closed at about 10 AM with an HR summary email. |
+| **Leave** | Leave types and quota (pro-rated, monthly or yearly credit, half day, without-pay type). Employees apply from their own login; HR / admin / reporting manager approve or reject. WhatsApp and email go out on apply and on decision, and attendance updates automatically. Attendance correction (missed punch) requests work the same way. |
+| **Payroll** | Paid days from attendance (calendar / 30 / 26-day basis, paid weekly off and holidays, sandwich rule, late-mark penalty), earnings split (Basic %, HRA %, special allowance), overtime (single / double, on gross or basic, monthly cap), PF, ESIC and Gujarat PT slabs, plus adjustments (bonus, incentive, arrears, advance, loan, fine, TDS). Draft → Lock → Publish (employees notified) → Paid. Salary register and bank transfer CSV. Printable salary slip with amount in words. |
+| **Self-service** | Role `employee`. They sign in with their mobile number and see only their own attendance calendar, leave balance and requests, corrections and published salary slips. |
+
+All rules are in **HR settings** (shifts, attendance and salary rules, leave types). Holidays are shared with recruitment (Settings → Holidays).
+
+**Machine connection notes.** On the free `*.workers.dev` address Cloudflare always runs a browser check, and plain-HTTP behaviour isn't documented, so some machines may fail to connect directly. For reliable direct connection, put the Worker on your own domain (Cloudflare → Workers → Custom domain). Otherwise use the punch API or Excel import.
+
 ## 3. The workflow (single official step list)
 
 | # | Step | Doer | TAT |

@@ -305,6 +305,8 @@ async function applyOutcome(step, opt, inst, data, user, remark) {
       const onb = await get('SELECT * FROM onboardings WHERE id=?', entity_id);
       await run(`UPDATE onboardings SET status='Joined' WHERE id=?`, entity_id);
       await run(`UPDATE candidates SET status='Joined' WHERE id=?`, onb.candidate_id);
+      // joined = becomes an employee (attendance, leave, payroll)
+      try { const { createEmployeeFromCandidate } = await import('./routes/hr.js'); await createEmployeeFromCandidate(onb.candidate_id); } catch (e) { console.error('[employee]', e.message); }
       const c = await get('SELECT requirement_id FROM candidates WHERE id=?', onb.candidate_id);
       if (c?.requirement_id) {
         await run('UPDATE requirements SET filled=filled+1 WHERE id=?', c.requirement_id);

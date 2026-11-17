@@ -17,8 +17,15 @@ export const EVENTS = {
   'S15:Joined': 'Joined (Day 1)',
   'S19:Working': '6-day follow-up done',
   'cron.daily_digest': 'Every morning 9:30 (auto)',
+  'leave.applied': 'Employee applied for leave',
+  'leave.approved': 'Leave approved',
+  'leave.rejected': 'Leave rejected',
+  'payslip.published': 'Salary slip published',
+  'attendance.request': 'Attendance correction requested',
+  'cron.absent_digest': 'Every morning ~10:00 – yesterday attendance (auto)',
+  'cron.missed_punch': 'Every morning ~10:00 – missed punch / absent alert (auto)',
 };
-export const RECIPIENTS = { candidate: 'Candidate', consultancy: 'Consultancy (if source is a consultancy)', approver: 'Approver (Ritesh Sir)', recruiter: 'Recruiter', hod: 'HOD', doer: 'Each doer (own tasks)' };
+export const RECIPIENTS = { candidate: 'Candidate', consultancy: 'Consultancy (if source is a consultancy)', approver: 'Approver (Ritesh Sir)', recruiter: 'Recruiter', hod: 'HOD', doer: 'Each doer (own tasks)', employee: 'Employee', manager: 'Reporting manager', hr: 'HR team', admin: 'Admin' };
 
 const DEFAULTS = [
   ['requirement.created', 'Tell recruiter about new requirement', 'email', 'recruiter', 'new_requirement', null, 1],
@@ -36,6 +43,18 @@ const DEFAULTS = [
   ['S15:Joined', 'Welcome message on joining', 'whatsapp', 'candidate', 'welcome', null, 1],
   ['S19:Working', 'Send feedback form link', 'whatsapp', 'candidate', 'feedback', null, 1],
   ['cron.daily_digest', 'Daily task list to every doer', 'email', 'doer', 'daily_digest', null, 1],
+  ['leave.applied', 'Leave request to HR (email)', 'email', 'hr', 'leave_applied_email', null, 1],
+  ['leave.applied', 'Leave request to HR (WhatsApp)', 'whatsapp', 'hr', 'leave_applied_wa', null, 1],
+  ['leave.applied', 'Leave request to reporting manager', 'whatsapp', 'manager', 'leave_applied_wa', null, 1],
+  ['leave.approved', 'Leave approved – tell employee (WhatsApp)', 'whatsapp', 'employee', 'leave_decision_wa', null, 1],
+  ['leave.approved', 'Leave approved – tell employee (email)', 'email', 'employee', 'leave_decision_email', null, 1],
+  ['leave.rejected', 'Leave rejected – tell employee (WhatsApp)', 'whatsapp', 'employee', 'leave_decision_wa', null, 1],
+  ['leave.rejected', 'Leave rejected – tell employee (email)', 'email', 'employee', 'leave_decision_email', null, 1],
+  ['payslip.published', 'Salary slip – WhatsApp to employee', 'whatsapp', 'employee', 'payslip_wa', null, 1],
+  ['payslip.published', 'Salary slip – email to employee', 'email', 'employee', 'payslip_email', null, 1],
+  ['attendance.request', 'Attendance correction to HR', 'email', 'hr', 'attendance_request_email', null, 1],
+  ['cron.absent_digest', 'Yesterday attendance summary to HR', 'email', 'hr', 'absent_digest', null, 1],
+  ['cron.missed_punch', 'Missed punch / absent alert to employee', 'whatsapp', 'employee', 'missed_punch_wa', null, 0],
 ];
 
 export async function seedAutomations() {
@@ -87,8 +106,27 @@ async function runRule(rule, ctx) {
     if (r) vars = { ...vars, code: r.code, designation: r.designation, company: r.company, salary: r.salary_range || '', openings: r.openings, requirement_by: r.requirement_by, portal_link: `${base}/requirements/${r.id}` };
   }
 
+  let employee = null;
+  if (ctx.employee_id) {
+    employee = await get('SELECT * FROM employees WHERE id=?', ctx.employee_id);
+    if (employee) vars = { ...vars, employee: employee.name, emp_code: employee.emp_code, department: employee.department || '', designation: employee.designation || '', company: employee.company || '', portal_link: `${base}/me` };
+  }
+  if (ctx.leave_id) {
+    const l = await get('SELECT l.*, t.name AS leave_type FROM leave_requests l LEFT JOIN leave_types t ON t.code=l.leave_code WHERE l.id=?', ctx.leave_id);
+    if (l) vars = { ...vars, leave_type: l.leave_type || l.leave_code, from_date: l.from_date, to_date: l.to_date, days: l.days, reason: l.reason || '-', status: l.status, remark: l.decision_remark || '', portal_link: `${base}/hr/leave` };
+  }
+  if (ctx.payslip_id) {
+    const p = await get('SELECT * FROM payslips WHERE id=?', ctx.payslip_id);
+    if (p) vars = { ...vars, month: p.month, net: Math.round(p.net).toLocaleString('en-IN'), gross: Math.round(p.gross).toLocaleString('en-IN'), deductions: Math.round(p.deductions).toLocaleString('en-IN'), paid_days: p.paid_days, portal_link: `${base}/payslip/${p.id}` };
+  }
+
+  vars = { ...vars, ...(ctx.extra || {}) };
+
   // who receives it
   let targets = [];
+  if (rule.recipient === 'employee' && employee) targets = [{ name: employee.name, email: employee.email, phone: employee.mobile }];
+  if (rule.recipient === 'manager' && employee?.manager_user_id) targets = (await all('SELECT name, email, phone FROM users WHERE id=? AND active=1', employee.manager_user_id));
+  if (rule.recipient === 'admin') targets = (await usersByRole('admin')).map((u) => ({ name: u.name, email: u.email, phone: u.phone }));
   if (rule.recipient === 'candidate' && candidate) targets = [{ name: candidate.name, email: candidate.email, phone: candidate.mobile }];
   if (rule.recipient === 'consultancy' && candidate) {
     if (!(await isConsultancy(candidate.source)) || !candidate.consultancy_email) {
@@ -98,7 +136,7 @@ async function runRule(rule, ctx) {
     }
     targets = [{ name: candidate.source, email: candidate.consultancy_email }];
   }
-  if (['approver', 'recruiter', 'hod'].includes(rule.recipient)) targets = (await usersByRole(rule.recipient)).map((u) => ({ name: u.name, email: u.email, phone: u.phone }));
+  if (['approver', 'recruiter', 'hod', 'hr'].includes(rule.recipient)) targets = (await usersByRole(rule.recipient)).map((u) => ({ name: u.name, email: u.email, phone: u.phone }));
 
   const out = [];
   for (const t of targets) {
@@ -108,11 +146,11 @@ async function runRule(rule, ctx) {
     let res;
     if (rule.channel === 'email') {
       if (!t.email || /@epil\.local$/i.test(t.email)) { out.push({ to: t.name, skipped: 'no email' }); continue; }
-      res = await sendEmail({ to: t.email, subject, body, candidate_id: candidate?.id, template: tpl.key, automation: String(rule.id), queueIfManual: true,
+      res = await sendEmail({ to: t.email, subject, body, candidate_id: candidate?.id, employee_id: employee?.id, template: tpl.key, automation: String(rule.id), queueIfManual: true,
         related_type: ctx.requirement_id ? 'requirement' : null, related_id: ctx.requirement_id ?? null });
     } else {
       if (!t.phone) { out.push({ to: t.name, skipped: 'no mobile' }); continue; }
-      res = await sendWhatsApp({ to: t.phone, body, candidate_id: candidate?.id, template: tpl.key, automation: String(rule.id), queueIfManual: true });
+      res = await sendWhatsApp({ to: t.phone, body, candidate_id: candidate?.id, employee_id: employee?.id, template: tpl.key, automation: String(rule.id), queueIfManual: true });
     }
     if (res.status === 'sent' && rule.complete_step && candidate) await autoComplete(candidate.id, rule.complete_step, 'Sent', `Auto: ${tpl.name} sent`);
     out.push({ to: t.name, status: res.status });
@@ -153,6 +191,19 @@ export async function runHourly() {
   }
   log.reminders = due.length;
 
+  // HR: keep today's attendance fresh, and once a day (after 10 AM) close yesterday + alerts
+  try {
+    const { processAttendance } = await import('./hr/attendance.js');
+    const today = now().slice(0, 10);
+    await processAttendance({ from: today, to: today });
+    if (h >= 10 && (await setting('last_hr_daily', '')) !== today) {
+      await run(`INSERT INTO settings(key,value) VALUES('last_hr_daily', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, today);
+      const y = new Date(nowD.getTime() - 864e5); const yday = fmt(y).slice(0, 10);
+      await processAttendance({ from: yday, to: yday });
+      log.hr = await hrDaily(yday);
+    }
+  } catch (e) { log.hr_error = e.message; }
+
   // 2) daily digest once a day at ~9 AM IST
   const today = now().slice(0, 10);
   if (h >= 9 && (await setting('last_digest_date', '')) !== today) {
@@ -180,4 +231,23 @@ async function sendDigests() {
     sent++;
   }
   return sent;
+}
+
+async function hrDaily(date) {
+  const rows = await all(`SELECT a.status, a.late_minutes, e.id, e.name, e.emp_code, e.department FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE a.date=? AND e.status <> 'Left'`, date);
+  if (!rows.length) return { employees: 0 };
+  const absent = rows.filter((r) => r.status === 'A');
+  const missed = rows.filter((r) => r.status === 'MP');
+  const v = {
+    date, present: rows.filter((r) => ['P', 'HD', 'WOP', 'HP'].includes(r.status)).length, absent: absent.length, leave: rows.filter((r) => r.status === 'L').length,
+    missed: missed.length, late: rows.filter((r) => r.late_minutes > 0).length,
+    absent_list: absent.map((r) => `• ${r.emp_code} ${r.name} (${r.department || '-'})`).join('\n') || '–',
+    missed_list: missed.map((r) => `• ${r.emp_code} ${r.name}`).join('\n') || '–',
+    portal_link: `${await setting('public_url', '')}/hr/attendance`,
+  };
+  await runAutomations('cron.absent_digest', { extra: v });
+  for (const r of [...missed, ...absent].slice(0, 200)) {
+    await runAutomations('cron.missed_punch', { employee_id: r.id, extra: { date, status_text: r.status === 'MP' ? 'a missed punch (only one punch)' : 'absent' } });
+  }
+  return { employees: rows.length, absent: absent.length, missed: missed.length };
 }
