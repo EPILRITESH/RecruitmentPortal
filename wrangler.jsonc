@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "epil-recruitment",
+  "main": "server/src/worker.js",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "upload_source_maps": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "epil-recruitment",
+      "database_id": "d7b17db5-6988-4092-b76e-2f4c4f9fb6bc",
+      "migrations_dir": "server/migrations"
+    }
+  ]
+  // Optional, once R2 is enabled on the account:
+  // "r2_buckets": [{ "binding": "FILES", "bucket_name": "epil-recruitment-files" }]
+}

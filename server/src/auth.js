@@ -3,10 +3,13 @@ import bcrypt from 'bcryptjs';
 import crypto from 'node:crypto';
 import { get, setting, setSetting } from './db.js';
 
-function secret() {
+let cachedSecret = null;
+async function secret() {
   if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
-  let s = setting('jwt_secret');
-  if (!s) { s = crypto.randomBytes(32).toString('hex'); setSetting('jwt_secret', s); }
+  if (cachedSecret) return cachedSecret;
+  let s = await setting('jwt_secret');
+  if (!s) { s = crypto.randomBytes(32).toString('hex'); await setSetting('jwt_secret', s); }
+  cachedSecret = s;
   return s;
 }
 
@@ -21,23 +24,40 @@ export const ROLES = {
   accounts: 'Accounts (agency payment)',
 };
 
-export const hashPassword = (p) => bcrypt.hashSync(p, 10);
-export const checkPassword = (p, h) => bcrypt.compareSync(p, h);
-export const signToken = (u) => jwt.sign({ id: u.id, role: u.role }, secret(), { expiresIn: '7d' });
+// PBKDF2-SHA256 (native crypto, fast enough for Workers CPU limits)
+const ITER = 10000; // kept low to stay inside the Workers free-plan CPU limit
+export function hashPassword(p) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.pbkdf2Sync(String(p), salt, ITER, 32, 'sha256').toString('hex');
+  return `pbkdf2$${ITER}$${salt}$${hash}`;
+}
+export function checkPassword(p, stored) {
+  if (!stored) return false;
+  if (stored.startsWith('pbkdf2$')) {
+    const [, iter, salt, hash] = stored.split('$');
+    const h = crypto.pbkdf2Sync(String(p), salt, Number(iter), 32, 'sha256').toString('hex');
+    return crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(hash, 'hex'));
+  }
+  return bcrypt.compareSync(String(p), stored); // older bcrypt hashes
+}
+export const signToken = async (u) => jwt.sign({ id: u.id, role: u.role }, await secret(), { expiresIn: '7d' });
 
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : req.query.token;
   if (!token) return res.status(401).json({ error: 'Login required' });
+  let p;
   try {
-    const p = jwt.verify(token, secret());
-    const u = get('SELECT id, name, email, phone, role, active FROM users WHERE id=?', p.id);
+    p = jwt.verify(token, await secret());
+  } catch {
+    return res.status(401).json({ error: 'Session expired, please login again' });
+  }
+  try {
+    const u = await get('SELECT id, name, email, phone, role, active FROM users WHERE id=?', p.id);
     if (!u || !u.active) return res.status(401).json({ error: 'User disabled' });
     req.user = u;
     next();
-  } catch {
-    res.status(401).json({ error: 'Session expired, please login again' });
-  }
+  } catch (e) { next(e); }
 }
 
 export const requireRole = (...roles) => (req, res, next) =>

@@ -2,7 +2,9 @@
 
 The FMS-26 Google Sheet, Google Forms and Looker Studio dashboard, rebuilt as one web portal with AI recruitment agents.
 
-**Stack:** React 19 + Vite + Tailwind (client) · Node.js 22 + Express (server) · SQLite via `node:sqlite` (same SQL runs on **Cloudflare D1**) · Claude API for the AI agents.
+**Live:** https://epil-recruitment.epil.workers.dev (Cloudflare Workers + D1)
+
+**Stack:** React 19 + Vite + Tailwind (client) · Express (server) running on **Cloudflare Workers** with a **D1** database, or on plain Node.js 22 with a local SQLite file · Claude API for the AI agents.
 
 ---
 
@@ -16,7 +18,7 @@ npm run build            # builds the React app
 npm start                # http://localhost:4000
 ```
 
-First start creates the database and default users:
+A fresh **local** database starts with these default users (the live site uses different, strong passwords):
 
 | Login | Password | Role |
 |---|---|---|
@@ -120,18 +122,43 @@ Set **Settings → Portal public URL** to your real domain so WhatsApp links poi
 - **Email:** any SMTP server, e.g. Gmail with an app password. Without SMTP, the email opens in your mail app.
 - Message templates are editable in Settings and use `{{name}}`, `{{designation}}`, `{{interview_at}}` and similar.
 
-## 6. Database / deployment notes
+## 6. Cloudflare deployment (live site)
 
-- Schema: `server/src/schema.sql`. It is written in the SQLite dialect, so it runs unchanged on **Cloudflare D1** (`wrangler d1 execute <db> --file server/src/schema.sql`).
-- All queries go through `server/src/db.js` (`all / get / run / tx`). Moving to D1 (async `prepare().bind().all()`) or MySQL only changes that file and the `INSERT … ON CONFLICT` upserts.
-- Uploads (resumes, invoices) are stored in `server/uploads/`. On a cloud host, point this at persistent storage (or R2/S3).
-- Back up `server/data/recruitment.db` daily. It is a single file.
+| Piece | Where |
+|---|---|
+| Worker | `epil-recruitment`, entry `server/src/worker.js` (Express via `httpServerHandler`) |
+| Database | D1 `epil-recruitment`, binding `DB`, schema in `server/migrations/` |
+| Files (resumes, invoices) | stored in D1 (`files` table, up to ~1.9 MB each). Enable R2 and add the `FILES` binding in `wrangler.jsonc` to switch to R2 automatically. |
+| React app | built into the Worker (`scripts/bundle-client.mjs` → `server/src/static-bundle.js`) |
+| Secrets | `JWT_SECRET` (set), `ANTHROPIC_API_KEY` (optional: `npx wrangler secret put ANTHROPIC_API_KEY`, or paste it in Settings → AI) |
+
+Deploy an update:
+
+```bash
+npm install && npm run install:all
+npx wrangler d1 migrations apply epil-recruitment --remote   # only when schema changes
+npm run deploy                                               # builds client, bundles it, wrangler deploy
+```
+
+Re-load data from the Google Sheet into the live database (this **replaces** all live data):
+
+```bash
+npm run import:fms -- "/path/to/FMS-26.xlsx" --reset
+node server/src/export-d1.js > d1-data.sql
+npx wrangler d1 execute epil-recruitment --remote --file d1-data.sql
+```
+
+The code runs on Node.js too: `npm start` uses `server/src/index.js`, a local SQLite file and an `uploads/` folder. All queries go through `server/src/db.js`, which has both drivers. Times are stored as India time (IST) on both runtimes.
 
 ## 7. Project layout
 
 ```
 server/src/
-  index.js          Express app, serves client/dist
+  app.js            Express app (shared)
+  worker.js         Cloudflare Workers entry (D1, static bundle)
+  index.js          Node.js entry (SQLite file, serves client/dist)
+  storage.js        uploads → R2 / D1 / local folder
+  export-d1.js      local DB → SQL file for D1
   schema.sql        tables
   workflow.js       step definitions + engine (planned/actual/delay, outcomes, task list)
   ai.js             Claude agents: JD, CV parser, screening, outreach, assistant

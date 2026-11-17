@@ -1,6 +1,5 @@
 // First-run setup: default users, master lists and settings taken from FMS-26.
 // Run directly (`npm run seed`) to reset users' passwords to defaults.
-import { fileURLToPath } from 'node:url';
 import { run, get, setSetting, setting } from './db.js';
 import { hashPassword } from './auth.js';
 import { seedSteps } from './workflow.js';
@@ -28,29 +27,28 @@ export const MASTERS = {
   ],
 };
 
-export function seedMasters() {
+export async function seedMasters() {
   for (const [type, list] of Object.entries(MASTERS)) {
     for (const item of list) {
       const [name, email] = Array.isArray(item) ? item : [item, null];
-      run('INSERT INTO masters(type,name,email) VALUES(?,?,?) ON CONFLICT(type,name) DO NOTHING', type, name, email);
+      await run('INSERT INTO masters(type,name,email) VALUES(?,?,?) ON CONFLICT(type,name) DO NOTHING', type, name, email);
     }
   }
 }
 
-export function bootstrap() {
-  seedSteps();
-  seedTemplates();
+export async function bootstrap() {
+  await seedSteps();
+  await seedTemplates();
   for (const u of DEFAULT_USERS) {
-    run('INSERT INTO users(name,email,role,password_hash) VALUES(?,?,?,?) ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash',
+    await run('INSERT INTO users(name,email,role,password_hash) VALUES(?,?,?,?) ON CONFLICT(email) DO UPDATE SET password_hash=excluded.password_hash',
       u.name, u.email, u.role, hashPassword(u.password));
   }
-  seedMasters();
+  await seedMasters();
   const defaults = { company_name: 'EPIL Group', public_url: 'http://localhost:4000', work_start_hour: '9', work_end_hour: '19', weekly_off: '0', whatsapp_mode: 'link', escalation_hours: '48', ai_model: 'claude-opus-5-5' };
-  for (const [k, v] of Object.entries(defaults)) if (setting(k) === null) setSetting(k, v);
+  for (const [k, v] of Object.entries(defaults)) if ((await setting(k)) === null) await setSetting(k, v);
   // Assign fixed doers so tasks show the right person
-  const byEmail = (e) => get('SELECT id FROM users WHERE email=?', e)?.id;
-  run(`UPDATE steps SET doer_user_id=? WHERE doer_role='recruiter' AND doer_user_id IS NULL`, byEmail('khushi@epil.local'));
+  const khushi = await get('SELECT id FROM users WHERE email=?', 'khushi@epil.local');
+  if (khushi) await run(`UPDATE steps SET doer_user_id=? WHERE doer_role='recruiter' AND doer_user_id IS NULL`, khushi.id);
   console.log('Default users created. Admin login: admin@epil.local / admin123 (others: epil@123)');
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) bootstrap();

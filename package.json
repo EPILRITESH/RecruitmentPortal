@@ -7,6 +7,11 @@
     "start": "npm start --prefix server",
     "dev:server": "npm run dev --prefix server",
     "dev:client": "npm run dev --prefix client",
-    "import:fms": "npm run import:fms --prefix server --"
+    "import:fms": "npm run import:fms --prefix server --",
+    "build:worker": "npm run build --prefix client && node scripts/bundle-client.mjs",
+    "deploy": "npm run build:worker && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.163.0"
   }
 }

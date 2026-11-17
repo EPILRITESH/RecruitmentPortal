@@ -4,7 +4,10 @@
 // rebuilds every record with its step history (planned / actual / result / delay).
 process.env.TZ = process.env.TZ || 'Asia/Kolkata';
 import ExcelJS from 'exceljs';
-import { db, all, get, run, now, parse, tx } from './db.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { useNodeSqlite, exec, all, get, run, now, parse, tx } from './db.js';
 import { seedSteps, getSteps } from './workflow.js';
 import { bootstrap } from './seed.js';
 
@@ -72,32 +75,38 @@ function rowsOf(ws, startRow) {
 
 // ---------- step writer ----------
 const delayH = (planned, actual) => (planned && actual ? Math.max(0, Math.round(((parse(actual) - parse(planned)) / 36e5) * 10) / 10) : null);
-function putStep(entity_type, entity_id, code, { planned, actual, result, remark, state }) {
-  run(`INSERT INTO step_instances(entity_type, entity_id, step_code, planned_at, actual_at, state, result, remark, delay_hours, created_at)
+async function putStep(entity_type, entity_id, code, { planned, actual, result, remark, state }) {
+  await run(`INSERT INTO step_instances(entity_type, entity_id, step_code, planned_at, actual_at, state, result, remark, delay_hours, created_at)
        VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(entity_type, entity_id, step_code) DO NOTHING`,
     entity_type, entity_id, code, planned, actual, state, result, remark ?? null, state === 'done' ? delayH(planned, actual) : null, actual || planned || now());
 }
 
 async function main() {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const dbFile = process.env.DB_PATH || path.join(here, '..', 'data', 'recruitment.db');
+  fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+  await useNodeSqlite(dbFile);
+  await exec(fs.readFileSync(path.join(here, 'schema.sql'), 'utf8'));
   console.log('Reading', file);
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(file);
   const sheet = (name) => wb.worksheets.find((w) => w.name.trim().toUpperCase() === name.toUpperCase());
 
-  seedSteps();
-  if (!get('SELECT id FROM users LIMIT 1')) bootstrap();
-  getSteps();
+  await seedSteps();
+  if (!await get('SELECT id FROM users LIMIT 1')) await bootstrap();
+  await getSteps();
 
-  const existing = get('SELECT COUNT(*) n FROM candidates').n + get('SELECT COUNT(*) n FROM requirements').n;
+  const existing = (await get('SELECT COUNT(*) n FROM candidates')).n + (await get('SELECT COUNT(*) n FROM requirements')).n;
   if (existing && !reset) {
     console.error(`Database already has ${existing} records. Re-run with --reset to wipe recruitment data and import again.`);
     process.exit(1);
   }
 
-  tx(() => {
+  await exec('BEGIN');
+  await tx(async () => {
     if (reset) {
-      for (const t of ['step_instances', 'activity', 'messages', 'onboardings', 'candidates', 'requirements', 'portal_payments', 'ai_runs']) run(`DELETE FROM ${t}`);
-      run(`DELETE FROM sqlite_sequence WHERE name IN ('step_instances','activity','messages','onboardings','candidates','requirements','portal_payments','ai_runs')`);
+      for (const t of ['step_instances', 'activity', 'messages', 'onboardings', 'candidates', 'requirements', 'portal_payments', 'ai_runs']) await run(`DELETE FROM ${t}`);
+      await run(`DELETE FROM sqlite_sequence WHERE name IN ('step_instances','activity','messages','onboardings','candidates','requirements','portal_payments','ai_runs')`);
     }
 
     // ================= INWARD =================
@@ -111,7 +120,7 @@ async function main() {
       const code = s(c(19)) || `IN-${sr}`;
       const created = d(c(0)) || now();
       const st = up(c(23));
-      const x = run(`INSERT INTO requirements(code, request_date, company, designation, salary_range, openings, requirement_by, status, jd_status, created_at)
+      const x = await run(`INSERT INTO requirements(code, request_date, company, designation, salary_range, openings, requirement_by, status, jd_status, created_at)
                      VALUES(?,?,?,?,?,1,?,?,?,?)`,
         code, (d(c(2)) || created).slice(0, 10), s(c(4)) || '-', designation, s(c(6)), (s(c(3)) || '-').toUpperCase().replace(/\s+/g, ' ').trim(),
         st === 'HOLD' ? 'On Hold' : 'Open', 'Approved', created);
@@ -121,8 +130,8 @@ async function main() {
       let open = st !== 'HOLD';
       for (const [code2, col, okLabel] of map) {
         const planned = d(c(col)), actual = d(c(col + 1));
-        if (actual) putStep('requirement', id, code2, { planned, actual, result: okLabel, state: 'done' });
-        else if (open) { putStep('requirement', id, code2, { planned: planned || created, state: 'pending' }); open = false; }
+        if (actual) await putStep('requirement', id, code2, { planned, actual, result: okLabel, state: 'done' });
+        else if (open) { await putStep('requirement', id, code2, { planned: planned || created, state: 'pending' }); open = false; }
       }
       nIn++;
     }
@@ -144,14 +153,14 @@ async function main() {
       { code: 'S12', col: 44, res: (r) => (r ? 'Sent' : undefined) },
       { code: 'S13', col: 49, res: (r) => (r ? 'Verified' : undefined) },
     ];
-    const steps = Object.fromEntries(getSteps('outward').map((x) => [x.code, x]));
+    const steps = Object.fromEntries((await getSteps('outward')).map((x) => [x.code, x]));
     for (const c of rowsOf(out, 8)) {
       const name = s(c(3));
       if (!name) continue;
       const code = s(c(61)) || `OUT-${num(c(2))}`;
       const created = d(c(0)) || now();
       const reqId = reqBySr.get(num(c(1))) || null;
-      const x = run(`INSERT INTO candidates(code, requirement_id, name, mobile, source, consultancy_email, resume_url, joining_date, status, stage, apply_token, created_at)
+      const x = await run(`INSERT INTO candidates(code, requirement_id, name, mobile, source, consultancy_email, resume_url, joining_date, status, stage, apply_token, created_at)
                      VALUES(?,?,?,?,?,?,?,?, 'Active', 'Screening', ?, ?) ON CONFLICT(code) DO NOTHING`,
         code, reqId, name.replace(/\s+/g, ' '), mobile(c(6)), up(c(4)) || 'OTHER', s(c(5)), s(c(7)), (d(c(48)) || '').slice(0, 10) || null,
         Math.random().toString(36).slice(2, 12) + nOut, created);
@@ -164,7 +173,7 @@ async function main() {
         const raw = up(c(m.col + 2));
         const result = m.res(raw, c);
         if (actual && result) {
-          putStep('candidate', id, m.code, { planned, actual, result, remark: m.remark?.(c), state: 'done' });
+          await putStep('candidate', id, m.code, { planned, actual, result, remark: m.remark?.(c), state: 'done' });
           lastDone = { code: m.code, result, actual };
           const opt = steps[m.code].options.find((o) => o.value === result);
           if (opt?.outcome === 'reject') { status = 'Rejected'; stage = `Rejected at ${steps[m.code].short_name}`; }
@@ -177,13 +186,13 @@ async function main() {
           // first open step after the last done one => pending (only if it is the logical next step)
           const isNext = !lastDone || expected === m.code || (!expected && !steps[m.code].optional);
           if (isNext && (planned || !lastDone)) {
-            putStep('candidate', id, m.code, { planned: planned || created, state: 'pending' });
+            await putStep('candidate', id, m.code, { planned: planned || created, state: 'pending' });
             stage = steps[m.code].short_name;
             pendingAdded = true;
           }
         }
       }
-      run('UPDATE candidates SET status=?, stage=? WHERE id=?', status, stage, id);
+      await run('UPDATE candidates SET status=?, stage=? WHERE id=?', status, stage, id);
       if (status === 'Selected') selectedByName.set(name.toUpperCase().replace(/\s+/g, ' ').trim(), id);
       nOut++;
     }
@@ -203,23 +212,23 @@ async function main() {
       const key = name.toUpperCase().replace(/\s+/g, ' ').trim();
       let candId = selectedByName.get(key);
       if (!candId) {
-        candId = get(`SELECT id FROM candidates WHERE upper(name)=? ORDER BY id DESC`, key)?.id;
+        candId = (await get(`SELECT id FROM candidates WHERE upper(name)=? ORDER BY id DESC`, key))?.id;
       }
       if (!candId) {
         // onboarding row without an outward row: create the candidate so history is not lost
-        const req = get('SELECT id FROM requirements WHERE upper(designation)=upper(?) AND upper(company)=upper(?) ORDER BY id DESC', s(c(3)) || '', s(c(4)) || '');
-        const x = run(`INSERT INTO candidates(code, requirement_id, name, mobile, source, status, stage, created_at) VALUES(?,?,?,?,?, 'Selected', 'Selected', ?)`,
+        const req = await get('SELECT id FROM requirements WHERE upper(designation)=upper(?) AND upper(company)=upper(?) ORDER BY id DESC', s(c(3)) || '', s(c(4)) || '');
+        const x = await run(`INSERT INTO candidates(code, requirement_id, name, mobile, source, status, stage, created_at) VALUES(?,?,?,?,?, 'Selected', 'Selected', ?)`,
           `OUT-X${nOnb}`, req?.id || null, name, '', up(c(2)) || 'OTHER', d(c(0)) || now());
         candId = Number(x.lastInsertRowid);
         unmatched++;
       }
-      if (get('SELECT id FROM onboardings WHERE candidate_id=?', candId)) continue;
-      const cand = get('SELECT joining_date FROM candidates WHERE id=?', candId);
+      if (await get('SELECT id FROM onboardings WHERE candidate_id=?', candId)) continue;
+      const cand = await get('SELECT joining_date FROM candidates WHERE id=?', candId);
       const joining = cand.joining_date || (d(c(59)) || d(c(0)) || '').slice(0, 10) || null;
       const pay = up(c(39));
       const amount = num(c(40));
       const staff = up(c(42));
-      const x = run(`INSERT INTO onboardings(code, candidate_id, joining_date, checklist, agency_payment, status, created_at) VALUES(?,?,?, '{}', ?, 'Pre-Onboarding', ?)`,
+      const x = await run(`INSERT INTO onboardings(code, candidate_id, joining_date, checklist, agency_payment, status, created_at) VALUES(?,?,?, '{}', ?, 'Pre-Onboarding', ?)`,
         s(c(61)) || `ONB-${nOnb + 1}`, candId, joining, amount, d(c(0)) || now());
       const oid = Number(x.lastInsertRowid);
       let left = staff === 'LEFT';
@@ -234,27 +243,27 @@ async function main() {
         if (okLabel === null) result = raw.startsWith('Y') ? 'Working' : raw.startsWith('N') ? 'Left' : null;
         if (code === 'S22') result = pay === 'DONE' ? 'Paid' : pay === 'LEFT' ? 'Not Applicable' : actual ? 'Paid' : null;
         if (actual && result) {
-          putStep('onboarding', oid, code, { planned, actual, result, state: 'done', remark: code === 'S22' && amount ? `₹${amount}` : null });
+          await putStep('onboarding', oid, code, { planned, actual, result, state: 'done', remark: code === 'S22' && amount ? `₹${amount}` : null });
           results[code] = result;
           if (result === 'Left') left = true;
         } else {
-          putStep('onboarding', oid, code, { planned: planned || joining || d(c(0)) || now(), state: left && code !== 'S22' && code !== 'S26' ? 'cancelled' : 'pending' });
+          await putStep('onboarding', oid, code, { planned: planned || joining || d(c(0)) || now(), state: left && code !== 'S22' && code !== 'S26' ? 'cancelled' : 'pending' });
         }
       }
       let status = 'Pre-Onboarding';
       if (results.S15) status = 'Joined';
       if (results.S25 === 'Working') status = 'Retained 90';
       if (left) status = 'Left';
-      run('UPDATE onboardings SET status=? WHERE id=?', status, oid);
-      if (left) run(`UPDATE step_instances SET state='cancelled' WHERE entity_type='onboarding' AND entity_id=? AND state='pending' AND step_code NOT IN ('S22','S26')`, oid);
-      run('UPDATE candidates SET status=? WHERE id=?', status === 'Left' ? 'Left' : status === 'Pre-Onboarding' ? 'Selected' : 'Joined', candId);
+      await run('UPDATE onboardings SET status=? WHERE id=?', status, oid);
+      if (left) await run(`UPDATE step_instances SET state='cancelled' WHERE entity_type='onboarding' AND entity_id=? AND state='pending' AND step_code NOT IN ('S22','S26')`, oid);
+      await run('UPDATE candidates SET status=? WHERE id=?', status === 'Left' ? 'Left' : status === 'Pre-Onboarding' ? 'Selected' : 'Joined', candId);
       nOnb++;
     }
     console.log(`Onboarding: ${nOnb} joinees (${unmatched} created without outward match)`);
 
     // requirement filled / closed
-    run(`UPDATE requirements SET filled = (SELECT COUNT(*) FROM candidates c JOIN onboardings o ON o.candidate_id=c.id WHERE c.requirement_id=requirements.id AND o.status IN ('Joined','Retained 90','Left'))`);
-    run(`UPDATE requirements SET status='Closed', closed_at=COALESCE(closed_at, created_at) WHERE status='Open' AND (filled >= openings OR EXISTS(SELECT 1 FROM candidates c WHERE c.requirement_id=requirements.id AND c.status IN ('Selected','Joined','Left')))
+    await run(`UPDATE requirements SET filled = (SELECT COUNT(*) FROM candidates c JOIN onboardings o ON o.candidate_id=c.id WHERE c.requirement_id=requirements.id AND o.status IN ('Joined','Retained 90','Left'))`);
+    await run(`UPDATE requirements SET status='Closed', closed_at=COALESCE(closed_at, created_at) WHERE status='Open' AND (filled >= openings OR EXISTS(SELECT 1 FROM candidates c WHERE c.requirement_id=requirements.id AND c.status IN ('Selected','Joined','Left')))
          AND NOT EXISTS(SELECT 1 FROM step_instances si WHERE si.entity_type='requirement' AND si.entity_id=requirements.id AND si.state='pending')`);
 
     // ================= PAYMENTS =================
@@ -265,7 +274,7 @@ async function main() {
         const platform = up(c(2));
         const amount = num(c(5));
         if (!platform || !amount) continue;
-        run('INSERT INTO portal_payments(platform, post_name, posted_date, closed_date, amount, invoice, created_at) VALUES(?,?,?,?,?,?,?)',
+        await run('INSERT INTO portal_payments(platform, post_name, posted_date, closed_date, amount, invoice, created_at) VALUES(?,?,?,?,?,?,?)',
           platform, s(c(1)), (d(c(3)) || '').slice(0, 10) || null, (d(c(4)) || '').slice(0, 10) || null, amount, s(c(6)), d(c(0)) || now());
         nPay++;
       }
@@ -278,26 +287,26 @@ async function main() {
       for (const c of rowsOf(hol, 1)) {
         for (let i = 0; i < 6; i++) {
           const v = val(c(i));
-          if (v instanceof Date) run('INSERT INTO holidays(date,name) VALUES(?,?) ON CONFLICT DO NOTHING', d(v).slice(0, 10), s(c(i + 1)) || 'Holiday');
+          if (v instanceof Date) await run('INSERT INTO holidays(date,name) VALUES(?,?) ON CONFLICT DO NOTHING', d(v).slice(0, 10), s(c(i + 1)) || 'Holiday');
         }
       }
     }
 
     // masters from data
-    for (const r of all(`SELECT DISTINCT source, consultancy_email FROM candidates WHERE source IS NOT NULL`)) {
-      run(`INSERT INTO masters(type,name,email) VALUES('source',?,?) ON CONFLICT(type,name) DO NOTHING`, r.source, r.consultancy_email);
+    for (const r of await all(`SELECT DISTINCT source, consultancy_email FROM candidates WHERE source IS NOT NULL`)) {
+      await run(`INSERT INTO masters(type,name,email) VALUES('source',?,?) ON CONFLICT(type,name) DO NOTHING`, r.source, r.consultancy_email);
     }
-    for (const r of all(`SELECT DISTINCT upper(trim(designation)) d FROM requirements`)) run(`INSERT INTO masters(type,name) VALUES('designation',?) ON CONFLICT DO NOTHING`, r.d);
-    for (const r of all(`SELECT DISTINCT requirement_by d FROM requirements`)) run(`INSERT INTO masters(type,name) VALUES('requester',?) ON CONFLICT DO NOTHING`, r.d);
+    for (const r of await all(`SELECT DISTINCT upper(trim(designation)) d FROM requirements`)) await run(`INSERT INTO masters(type,name) VALUES('designation',?) ON CONFLICT DO NOTHING`, r.d);
+    for (const r of await all(`SELECT DISTINCT requirement_by d FROM requirements`)) await run(`INSERT INTO masters(type,name) VALUES('requester',?) ON CONFLICT DO NOTHING`, r.d);
   });
 
+  await exec('COMMIT');
   if (skipBefore) {
-    const r = run(`UPDATE step_instances SET state='skipped', remark='Old backlog skipped at import' WHERE state='pending' AND planned_at < ?`, skipBefore);
+    const r = await run(`UPDATE step_instances SET state='skipped', remark='Old backlog skipped at import' WHERE state='pending' AND planned_at < ?`, skipBefore);
     console.log(`Skipped ${r.changes} old pending steps planned before ${skipBefore}`);
   }
-  console.log('Pending tasks created:', get(`SELECT COUNT(*) n FROM step_instances WHERE state='pending'`).n);
+  console.log('Pending tasks created:', (await get(`SELECT COUNT(*) n FROM step_instances WHERE state='pending'`)).n);
   console.log('Import complete ✔');
-  db.close();
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

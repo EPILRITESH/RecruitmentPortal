@@ -1,63 +1,93 @@
-// Thin DB layer over SQLite (node:sqlite). Same SQL works on Cloudflare D1.
-// Every query goes through all/get/run so swapping the driver (D1, MySQL) is one file.
-import { DatabaseSync } from 'node:sqlite';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+// Async DB layer. Two drivers, same SQL:
+//   - Cloudflare Workers: D1 binding `env.DB`
+//   - Node.js (local / VPS): built-in node:sqlite file database
+// Every query goes through all/get/run/batch so the rest of the code does not care which one runs.
 
-const here = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = process.env.DB_PATH || path.join(here, '..', 'data', 'recruitment.db');
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+let driver = null;
 
-export const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-db.exec(fs.readFileSync(path.join(here, 'schema.sql'), 'utf8'));
+/** Called once at startup by the entry file (worker.js or index.js). */
+export function useD1(d1) {
+  driver = {
+    kind: 'd1',
+    async all(sql, params) { return (await d1.prepare(sql).bind(...params).all()).results || []; },
+    async get(sql, params) { return (await d1.prepare(sql).bind(...params).first()) || undefined; },
+    async run(sql, params) {
+      const r = await d1.prepare(sql).bind(...params).run();
+      return { changes: r.meta?.changes ?? 0, lastInsertRowid: r.meta?.last_row_id };
+    },
+    async exec(sqlText) { await d1.exec(sqlText.replace(/--[^\n]*\n/g, '\n').replace(/\s*\n\s*/g, ' ')); },
+  };
+}
 
+export async function useNodeSqlite(file) {
+  const { DatabaseSync } = await import('node:sqlite');
+  const db = new DatabaseSync(file);
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+  const conv = (r) => (r ? { ...r } : undefined);
+  driver = {
+    kind: 'node',
+    raw: db,
+    async all(sql, params) { return db.prepare(sql).all(...params).map(conv); },
+    async get(sql, params) { return conv(db.prepare(sql).get(...params)); },
+    async run(sql, params) { const r = db.prepare(sql).run(...params); return { changes: Number(r.changes), lastInsertRowid: Number(r.lastInsertRowid) }; },
+    async exec(sqlText) { db.exec(sqlText); },
+  };
+  return db;
+}
+
+const d = () => {
+  if (!driver) throw new Error('Database not initialised');
+  return driver;
+};
 const clean = (params) => params.map((p) => (p === undefined ? null : typeof p === 'boolean' ? (p ? 1 : 0) : p));
 
-export const all = (sql, ...params) => db.prepare(sql).all(...clean(params)).map((r) => ({ ...r }));
-export const get = (sql, ...params) => {
-  const r = db.prepare(sql).get(...clean(params));
-  return r ? { ...r } : undefined;
-};
-export const run = (sql, ...params) => db.prepare(sql).run(...clean(params));
+export const all = (sql, ...params) => d().all(sql, clean(params));
+export const get = (sql, ...params) => d().get(sql, clean(params));
+export const run = (sql, ...params) => d().run(sql, clean(params));
+export const exec = (sqlText) => d().exec(sqlText);
+export const dbKind = () => driver?.kind;
 
-export function tx(fn) {
-  db.exec('BEGIN');
-  try {
-    const out = fn();
-    db.exec('COMMIT');
-    return out;
-  } catch (e) {
-    db.exec('ROLLBACK');
-    throw e;
-  }
-}
+// D1 has no interactive transactions; steps are written in a safe order instead.
+export async function tx(fn) { return fn(); }
 
-// Local (IST) timestamp string "YYYY-MM-DD HH:MM:SS"
+// ---------------------------------------------------------------------------
+// Time: everything is stored as India wall-clock time "YYYY-MM-DD HH:MM:SS".
+// Workers always run in UTC, so we never rely on the machine time zone:
+// a "wall" Date is a Date whose UTC fields hold the IST clock reading.
+// ---------------------------------------------------------------------------
+export const TZ_OFFSET_MIN = 330; // Asia/Kolkata
+export const nowWall = () => new Date(Date.now() + TZ_OFFSET_MIN * 60000);
 export function fmt(d) {
   const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
 }
-export const now = () => fmt(new Date());
-export const parse = (s) => (s ? new Date(String(s).replace(' ', 'T')) : null);
+export const now = () => fmt(nowWall());
+export function parse(s) {
+  if (!s) return null;
+  let t = String(s).trim().replace(' ', 'T');
+  if (t.length === 10) t += 'T00:00:00';
+  if (t.length === 16) t += ':00';
+  const dt = new Date(`${t.slice(0, 19)}Z`);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
 
-export function setting(key, fallback = null) {
-  const r = get('SELECT value FROM settings WHERE key = ?', key);
+// ---------------------------------------------------------------------------
+export async function setting(key, fallback = null) {
+  const r = await get('SELECT value FROM settings WHERE key = ?', key);
   return r ? r.value : fallback;
 }
-export function setSetting(key, value) {
-  run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value));
+export async function setSetting(key, value) {
+  await run('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', key, String(value));
 }
 
 // Next sequential code like IN-166, continuing from imported FMS numbers
-export function nextCode(table, prefix, start) {
-  const r = get(`SELECT code FROM ${table} WHERE code LIKE ? ORDER BY CAST(substr(code, ?) AS INTEGER) DESC LIMIT 1`, `${prefix}-%`, prefix.length + 2);
+export async function nextCode(table, prefix, start) {
+  const r = await get(`SELECT code FROM ${table} WHERE code GLOB ? ORDER BY CAST(substr(code, ?) AS INTEGER) DESC LIMIT 1`, `${prefix}-[0-9]*`, prefix.length + 2);
   const n = r ? parseInt(r.code.split('-')[1], 10) + 1 : start;
   return `${prefix}-${n}`;
 }
 
-export function logActivity(entity_type, entity_id, action, detail, user_id) {
-  run('INSERT INTO activity(entity_type, entity_id, action, detail, user_id, created_at) VALUES(?,?,?,?,?,?)',
+export async function logActivity(entity_type, entity_id, action, detail, user_id) {
+  await run('INSERT INTO activity(entity_type, entity_id, action, detail, user_id, created_at) VALUES(?,?,?,?,?,?)',
     entity_type, entity_id, action, detail ?? null, user_id ?? null, now());
 }

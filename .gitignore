@@ -3,3 +3,6 @@ client/dist/
 server/data/
 server/uploads/
 .env
+.wrangler/
+.dev.vars*
+server/src/static-bundle.js

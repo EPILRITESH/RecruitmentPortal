@@ -214,3 +214,12 @@ CREATE TABLE IF NOT EXISTS ai_runs (
   user_id INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Uploaded files (used on Cloudflare when no R2 bucket is bound)
+CREATE TABLE IF NOT EXISTS files (
+  name TEXT PRIMARY KEY,
+  type TEXT,
+  size INTEGER,
+  data BLOB NOT NULL,
+  created_at TEXT
+);

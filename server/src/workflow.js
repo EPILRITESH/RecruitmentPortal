@@ -2,7 +2,7 @@
 // Each record (requirement / candidate / onboarding) gets one row per step in step_instances.
 // When a step is completed, the engine stamps the actual time, computes delay,
 // applies the outcome (reject / hold / select ...) and activates the next step with a planned date.
-import { all, get, run, now, fmt, parse, setting, nextCode, logActivity, tx } from './db.js';
+import { all, get, run, now, nowWall, fmt, parse, setting, nextCode, logActivity, tx } from './db.js';
 
 // ---------------------------------------------------------------------------
 // Step definitions (one clean list – fixes the swapped/blank names in the old STEPS tab)
@@ -76,62 +76,63 @@ export const STEP_DEFS = [
     options: [OK('Verified'), { value: 'Issue Found', label: 'Issue Found', color: 'amber' }] },
 ];
 
-export function seedSteps() {
+export async function seedSteps() {
   for (const s of STEP_DEFS) {
-    run(`INSERT INTO steps(code,no,stage,name,short_name,doer_role,how,tat_days,anchor,options,fields,optional)
+    await run(`INSERT INTO steps(code,no,stage,name,short_name,doer_role,how,tat_days,anchor,options,fields,optional)
          VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(code) DO NOTHING`,
       s.code, s.no, s.stage, s.name, s.short_name, s.doer_role, s.how, s.tat_days, s.anchor || 'prev',
       JSON.stringify(s.options), JSON.stringify(s.fields || []), s.optional || 0);
   }
 }
 
-export function getSteps(stage) {
-  const rows = stage ? all('SELECT * FROM steps WHERE stage=? AND active=1 ORDER BY no', stage) : all('SELECT * FROM steps WHERE active=1 ORDER BY no');
+export async function getSteps(stage) {
+  const rows = stage ? await all('SELECT * FROM steps WHERE stage=? AND active=1 ORDER BY no', stage) : await all('SELECT * FROM steps WHERE active=1 ORDER BY no');
   return rows.map((r) => ({ ...r, options: JSON.parse(r.options || '[]'), fields: JSON.parse(r.fields || '[]') }));
 }
-export const getStep = (code) => getSteps().find((s) => s.code === code);
+export const getStep = async (code) => (await getSteps()).find((s) => s.code === code);
 
 // ---------------------------------------------------------------------------
 // Working calendar (Sunday + holidays off, office 09:00 – 19:00 like the sheet's 0.375 / 19)
+// All Dates here are "wall" dates (UTC fields = India time), see db.js.
 // ---------------------------------------------------------------------------
-function calendar() {
-  const startH = Number(setting('work_start_hour', 9));
-  const endH = Number(setting('work_end_hour', 19));
-  const weekOff = String(setting('weekly_off', '0')).split(',').map(Number); // 0 = Sunday
-  const holidays = new Set(all('SELECT date FROM holidays').map((h) => h.date));
-  const isOff = (d) => weekOff.includes(d.getDay()) || holidays.has(fmt(d).slice(0, 10));
+async function calendar() {
+  const startH = Number(await setting('work_start_hour', 9));
+  const endH = Number(await setting('work_end_hour', 19));
+  const weekOff = String(await setting('weekly_off', '0')).split(',').map(Number); // 0 = Sunday
+  const holidays = new Set((await all('SELECT date FROM holidays')).map((h) => h.date));
+  const isOff = (d) => weekOff.includes(d.getUTCDay()) || holidays.has(fmt(d).slice(0, 10));
   return { startH, endH, isOff };
 }
 
-export function addWorkingDays(base, days) {
-  const { startH, endH, isOff } = calendar();
+export async function addWorkingDays(base, days, cal) {
+  const { startH, endH, isOff } = cal || (await calendar());
   const d = new Date(base);
   if (days <= 0) {
     // same working day, end of office time
-    if (d.getHours() >= endH || isOff(d)) {
-      do d.setDate(d.getDate() + 1); while (isOff(d));
+    if (d.getUTCHours() >= endH || isOff(d)) {
+      do d.setUTCDate(d.getUTCDate() + 1); while (isOff(d));
     }
-    d.setHours(endH, 0, 0, 0);
+    d.setUTCHours(endH, 0, 0, 0);
     return d;
   }
   let left = Math.ceil(days);
   while (left > 0) {
-    d.setDate(d.getDate() + 1);
+    d.setUTCDate(d.getUTCDate() + 1);
     if (!isOff(d)) left--;
   }
-  if (d.getHours() < startH) d.setHours(startH, 0, 0, 0);
-  if (d.getHours() >= endH) d.setHours(endH, 0, 0, 0);
+  if (d.getUTCHours() < startH) d.setUTCHours(startH, 0, 0, 0);
+  if (d.getUTCHours() >= endH) d.setUTCHours(endH, 0, 0, 0);
   return d;
 }
 
-export function anchoredDate(joining, offsetDays) {
-  const { endH, isOff } = calendar();
-  const d = parse(joining.length === 10 ? `${joining} 00:00:00` : joining);
-  d.setDate(d.getDate() + offsetDays);
+export async function anchoredDate(joining, offsetDays, cal) {
+  const { endH, isOff } = cal || (await calendar());
+  const d = parse(joining);
+  d.setUTCDate(d.getUTCDate() + offsetDays);
   const dir = offsetDays < 0 ? -1 : 1;
   let guard = 0;
-  while (isOff(d) && guard++ < 10) d.setDate(d.getDate() + dir);
-  d.setHours(endH, 0, 0, 0);
+  while (isOff(d) && guard++ < 10) d.setUTCDate(d.getUTCDate() + dir);
+  d.setUTCHours(endH, 0, 0, 0);
   return d;
 }
 
@@ -141,48 +142,49 @@ export function anchoredDate(joining, offsetDays) {
 const ENTITY_TABLE = { requirement: 'requirements', candidate: 'candidates', onboarding: 'onboardings' };
 const STAGE_ENTITY = { inward: 'requirement', outward: 'candidate', onboarding: 'onboarding' };
 
-export function activateStep(entity_type, entity_id, step_code, base = new Date()) {
-  const step = getStep(step_code);
+export async function activateStep(entity_type, entity_id, step_code, base = nowWall(), cal) {
+  const step = await getStep(step_code);
   if (!step) return;
   let planned;
   if (step.anchor === 'joining') {
-    const onb = get('SELECT joining_date FROM onboardings WHERE id=?', entity_id);
-    planned = onb?.joining_date ? anchoredDate(onb.joining_date, step.tat_days) : addWorkingDays(base, 1);
+    const onb = await get('SELECT joining_date FROM onboardings WHERE id=?', entity_id);
+    planned = onb?.joining_date ? await anchoredDate(onb.joining_date, step.tat_days, cal) : await addWorkingDays(base, 1, cal);
   } else {
-    planned = addWorkingDays(base, step.tat_days);
+    planned = await addWorkingDays(base, step.tat_days, cal);
   }
-  run(`INSERT INTO step_instances(entity_type, entity_id, step_code, planned_at, state, created_at)
+  await run(`INSERT INTO step_instances(entity_type, entity_id, step_code, planned_at, state, created_at)
        VALUES(?,?,?,?, 'pending', ?)
        ON CONFLICT(entity_type, entity_id, step_code) DO UPDATE SET state='pending', planned_at=excluded.planned_at, actual_at=NULL, result=NULL`,
     entity_type, entity_id, step_code, fmt(planned), now());
 }
 
-export function startWorkflow(entity_type, entity_id) {
+export async function startWorkflow(entity_type, entity_id) {
   const stage = Object.keys(STAGE_ENTITY).find((k) => STAGE_ENTITY[k] === entity_type);
-  const steps = getSteps(stage);
+  const steps = await getSteps(stage);
   if (stage === 'onboarding') {
-    for (const s of steps) activateStep(entity_type, entity_id, s.code);
+    const cal = await calendar();
+    for (const s of steps) await activateStep(entity_type, entity_id, s.code, nowWall(), cal);
   } else {
-    activateStep(entity_type, entity_id, steps[0].code);
+    await activateStep(entity_type, entity_id, steps[0].code);
   }
 }
 
-function nextDefaultStep(step) {
-  const steps = getSteps(step.stage);
+async function nextDefaultStep(step) {
+  const steps = await getSteps(step.stage);
   return steps.find((s) => s.no > step.no && !s.optional);
 }
 
 function cancelPending(entity_type, entity_id) {
-  run(`UPDATE step_instances SET state='cancelled' WHERE entity_type=? AND entity_id=? AND state='pending'`, entity_type, entity_id);
+  return run(`UPDATE step_instances SET state='cancelled' WHERE entity_type=? AND entity_id=? AND state='pending'`, entity_type, entity_id);
 }
 
 /** Complete a pending step. Returns updated instance. */
-export function completeStep(instanceId, { result, remark, data = {} }, user) {
-  return tx(() => {
-    const inst = get('SELECT * FROM step_instances WHERE id=?', instanceId);
+export async function completeStep(instanceId, { result, remark, data = {} }, user) {
+  return tx(async () => {
+    const inst = await get('SELECT * FROM step_instances WHERE id=?', instanceId);
     if (!inst) throw httpError(404, 'Step not found');
     if (inst.state !== 'pending') throw httpError(400, 'This step is already ' + inst.state);
-    const step = getStep(inst.step_code);
+    const step = await getStep(inst.step_code);
     const opt = step.options.find((o) => o.value === result);
     if (!opt) throw httpError(400, 'Choose a valid result');
     for (const f of step.fields) {
@@ -190,134 +192,137 @@ export function completeStep(instanceId, { result, remark, data = {} }, user) {
     }
 
     const { entity_type, entity_id } = inst;
-    applyFieldData(entity_type, entity_id, data);
+    await applyFieldData(entity_type, entity_id, data);
 
     // Rescheduled interview: keep the step open with a new planned date
     if (opt.outcome === 'replan') {
-      const when = data.interview_at ? parse(data.interview_at.replace('T', ' ') + (data.interview_at.length === 16 ? ':00' : '')) : addWorkingDays(new Date(), 2);
-      run('UPDATE step_instances SET planned_at=?, remark=?, follow_ups=follow_ups+1, last_follow_up=? WHERE id=?', fmt(when), remark ?? null, now(), inst.id);
-      logActivity(entity_type, entity_id, `${step.short_name}: Rescheduled`, remark, user?.id);
+      const when = data.interview_at ? parse(data.interview_at) : await addWorkingDays(nowWall(), 2);
+      await run('UPDATE step_instances SET planned_at=?, remark=?, follow_ups=follow_ups+1, last_follow_up=? WHERE id=?', fmt(when), remark ?? null, now(), inst.id);
+      await logActivity(entity_type, entity_id, `${step.short_name}: Rescheduled`, remark, user?.id);
       return get('SELECT * FROM step_instances WHERE id=?', inst.id);
     }
 
-    const actual = new Date();
+    const actual = nowWall();
     const planned = parse(inst.planned_at);
     const delay = planned ? Math.max(0, (actual - planned) / 36e5) : 0;
-    run(`UPDATE step_instances SET state='done', actual_at=?, result=?, remark=?, data=?, delay_hours=?, done_by=? WHERE id=?`,
+    // guarded update: a double click cannot complete the same step twice
+    const upd = await run(`UPDATE step_instances SET state='done', actual_at=?, result=?, remark=?, data=?, delay_hours=?, done_by=? WHERE id=? AND state='pending'`,
       fmt(actual), result, remark ?? null, JSON.stringify(data), Math.round(delay * 10) / 10, user?.id ?? null, inst.id);
-    logActivity(entity_type, entity_id, `${step.short_name}: ${result}`, remark, user?.id);
+    if (!upd.changes) throw httpError(409, 'This step was just updated by someone else');
+    await logActivity(entity_type, entity_id, `${step.short_name}: ${result}`, remark, user?.id);
 
-    applyOutcome(step, opt, inst, data, user);
+    await applyOutcome(step, opt, inst, data, user, remark);
 
     // activate next
     if (!['reject', 'drop', 'future_hold', 'not_joined', 'left'].includes(opt.outcome) && step.anchor !== 'joining') {
-      const next = opt.next ? getStep(opt.next) : nextDefaultStep(step);
+      const next = opt.next ? await getStep(opt.next) : await nextDefaultStep(step);
       if (next) {
-        activateStep(entity_type, entity_id, next.code, actual);
-        if (entity_type === 'candidate') run('UPDATE candidates SET stage=? WHERE id=?', next.short_name, entity_id);
+        await activateStep(entity_type, entity_id, next.code, actual);
+        if (entity_type === 'candidate') await run('UPDATE candidates SET stage=? WHERE id=?', next.short_name, entity_id);
         // S07 planned date = the interview date when known
         if (next.code === 'S07') {
-          const c = get('SELECT interview_at FROM candidates WHERE id=?', entity_id);
-          if (c?.interview_at) run(`UPDATE step_instances SET planned_at=? WHERE entity_type='candidate' AND entity_id=? AND step_code='S07'`, c.interview_at, entity_id);
+          const c = await get('SELECT interview_at FROM candidates WHERE id=?', entity_id);
+          if (c?.interview_at) await run(`UPDATE step_instances SET planned_at=? WHERE entity_type='candidate' AND entity_id=? AND step_code='S07'`, c.interview_at, entity_id);
         }
       } else if (entity_type === 'candidate' && step.code === 'S13') {
-        run(`UPDATE candidates SET stage='Handed to Onboarding' WHERE id=?`, entity_id);
+        await run(`UPDATE candidates SET stage='Handed to Onboarding' WHERE id=?`, entity_id);
       }
     }
     return get('SELECT * FROM step_instances WHERE id=?', inst.id);
   });
 }
 
-function applyFieldData(entity_type, entity_id, data) {
+async function applyFieldData(entity_type, entity_id, data) {
   if (entity_type === 'candidate') {
     const map = { interview_at: 'interview_at', interviewer: 'interviewer', joining_date: 'joining_date', offered_salary: 'offered_salary' };
     for (const [k, col] of Object.entries(map)) {
       if (data[k]) {
         let v = data[k];
-        if (k === 'interview_at') v = v.replace('T', ' ') + (v.length === 16 ? ':00' : '');
-        run(`UPDATE candidates SET ${col}=? WHERE id=?`, v, entity_id);
+        if (k === 'interview_at') v = fmt(parse(v));
+        await run(`UPDATE candidates SET ${col}=? WHERE id=?`, v, entity_id);
       }
     }
   }
   if (entity_type === 'onboarding' && data.amount) {
-    run('UPDATE onboardings SET agency_payment=? WHERE id=?', Number(data.amount), entity_id);
+    await run('UPDATE onboardings SET agency_payment=? WHERE id=?', Number(data.amount), entity_id);
   }
 }
 
-function applyOutcome(step, opt, inst, data, user) {
+async function applyOutcome(step, opt, inst, data, user, remark) {
   const { entity_type, entity_id } = inst;
   switch (opt.outcome) {
     case 'reject':
     case 'drop':
     case 'future_hold': {
       const status = opt.outcome === 'reject' ? 'Rejected' : opt.outcome === 'drop' ? 'Dropped' : 'Future Hold';
-      run('UPDATE candidates SET status=?, stage=? WHERE id=?', status, `${status} at ${step.short_name}`, entity_id);
-      cancelPending(entity_type, entity_id);
+      await run('UPDATE candidates SET status=?, stage=? WHERE id=?', status, `${status} at ${step.short_name}`, entity_id);
+      await cancelPending(entity_type, entity_id);
       break;
     }
     case 'select': {
-      run(`UPDATE candidates SET status='Selected', stage='Selected' WHERE id=?`, entity_id);
-      createOnboarding(entity_id, data.joining_date, user);
+      await run(`UPDATE candidates SET status='Selected', stage='Selected' WHERE id=?`, entity_id);
+      await createOnboarding(entity_id, data.joining_date, user);
       break;
     }
     case 'joined': {
-      const onb = get('SELECT * FROM onboardings WHERE id=?', entity_id);
-      run(`UPDATE onboardings SET status='Joined' WHERE id=?`, entity_id);
-      run(`UPDATE candidates SET status='Joined' WHERE id=?`, onb.candidate_id);
-      const c = get('SELECT requirement_id FROM candidates WHERE id=?', onb.candidate_id);
+      const onb = await get('SELECT * FROM onboardings WHERE id=?', entity_id);
+      await run(`UPDATE onboardings SET status='Joined' WHERE id=?`, entity_id);
+      await run(`UPDATE candidates SET status='Joined' WHERE id=?`, onb.candidate_id);
+      const c = await get('SELECT requirement_id FROM candidates WHERE id=?', onb.candidate_id);
       if (c?.requirement_id) {
-        run('UPDATE requirements SET filled=filled+1 WHERE id=?', c.requirement_id);
-        const r = get('SELECT filled, openings FROM requirements WHERE id=?', c.requirement_id);
+        await run('UPDATE requirements SET filled=filled+1 WHERE id=?', c.requirement_id);
+        const r = await get('SELECT filled, openings FROM requirements WHERE id=?', c.requirement_id);
         if (r.filled >= r.openings) {
-          run(`UPDATE requirements SET status='Closed', closed_at=? WHERE id=?`, now(), c.requirement_id);
-          cancelPending('requirement', c.requirement_id);
+          await run(`UPDATE requirements SET status='Closed', closed_at=? WHERE id=?`, now(), c.requirement_id);
+          await cancelPending('requirement', c.requirement_id);
         }
       }
       break;
     }
     case 'not_joined':
     case 'left': {
-      const onb = get('SELECT * FROM onboardings WHERE id=?', entity_id);
+      const onb = await get('SELECT * FROM onboardings WHERE id=?', entity_id);
       const st = opt.outcome === 'left' ? 'Left' : 'Not Joined';
-      run('UPDATE onboardings SET status=?, left_on=?, left_reason=? WHERE id=?', st, now(), inst.remark ?? null, entity_id);
-      run('UPDATE candidates SET status=? WHERE id=?', st, onb.candidate_id);
+      await run('UPDATE onboardings SET status=?, left_on=?, left_reason=? WHERE id=?', st, now(), remark ?? null, entity_id);
+      await run('UPDATE candidates SET status=? WHERE id=?', st, onb.candidate_id);
       // keep payment + PC verification open, cancel the rest
-      run(`UPDATE step_instances SET state='cancelled' WHERE entity_type='onboarding' AND entity_id=? AND state='pending' AND step_code NOT IN ('S22','S26')`, entity_id);
+      await run(`UPDATE step_instances SET state='cancelled' WHERE entity_type='onboarding' AND entity_id=? AND state='pending' AND step_code NOT IN ('S22','S26')`, entity_id);
       break;
     }
     case 'retained':
-      run(`UPDATE onboardings SET status='Retained 90' WHERE id=?`, entity_id);
+      await run(`UPDATE onboardings SET status='Retained 90' WHERE id=?`, entity_id);
       break;
     default:
   }
 }
 
-export function createOnboarding(candidate_id, joining_date, user) {
-  const exists = get('SELECT id FROM onboardings WHERE candidate_id=?', candidate_id);
+export async function createOnboarding(candidate_id, joining_date, user) {
+  const exists = await get('SELECT id FROM onboardings WHERE candidate_id=?', candidate_id);
   if (exists) return exists.id;
-  const code = nextCode('onboardings', 'ONB', 144);
-  const r = run(`INSERT INTO onboardings(code, candidate_id, joining_date, checklist, status, created_at) VALUES(?,?,?,?, 'Pre-Onboarding', ?)`,
+  const code = await nextCode('onboardings', 'ONB', 144);
+  const r = await run(`INSERT INTO onboardings(code, candidate_id, joining_date, checklist, status, created_at) VALUES(?,?,?,?, 'Pre-Onboarding', ?)`,
     code, candidate_id, joining_date || null, '{}', now());
   const id = Number(r.lastInsertRowid);
-  startWorkflow('onboarding', id);
-  logActivity('onboarding', id, 'Onboarding created', `From candidate #${candidate_id}`, user?.id);
+  await startWorkflow('onboarding', id);
+  await logActivity('onboarding', id, 'Onboarding created', `From candidate #${candidate_id}`, user?.id);
   return id;
 }
 
 /** Re-plan anchored onboarding steps when joining date changes */
-export function replanOnboarding(onboarding_id) {
-  const onb = get('SELECT joining_date FROM onboardings WHERE id=?', onboarding_id);
+export async function replanOnboarding(onboarding_id) {
+  const onb = await get('SELECT joining_date FROM onboardings WHERE id=?', onboarding_id);
   if (!onb?.joining_date) return;
-  for (const s of getSteps('onboarding')) {
-    run(`UPDATE step_instances SET planned_at=? WHERE entity_type='onboarding' AND entity_id=? AND step_code=? AND state='pending'`,
-      fmt(anchoredDate(onb.joining_date, s.tat_days)), onboarding_id, s.code);
+  const cal = await calendar();
+  for (const s of await getSteps('onboarding')) {
+    await run(`UPDATE step_instances SET planned_at=? WHERE entity_type='onboarding' AND entity_id=? AND step_code=? AND state='pending'`,
+      fmt(await anchoredDate(onb.joining_date, s.tat_days, cal)), onboarding_id, s.code);
   }
 }
 
 // ---------------------------------------------------------------------------
 // Task list (replaces Studio-2.0 + Rescue Sheet)
 // ---------------------------------------------------------------------------
-export function listTasks({ user, scope = 'mine', when = 'due', stage, q } = {}) {
+export async function listTasks({ user, scope = 'mine', when = 'due', stage, q } = {}) {
   const where = [`si.state='pending'`];
   const params = [];
   if (scope === 'mine' && user && user.role !== 'admin') {
@@ -325,12 +330,12 @@ export function listTasks({ user, scope = 'mine', when = 'due', stage, q } = {})
     params.push(user.id, user.role);
   }
   if (stage) { where.push('s.stage = ?'); params.push(stage); }
-  const endToday = fmt(new Date(new Date().setHours(23, 59, 59, 0)));
+  const endToday = `${now().slice(0, 10)} 23:59:59`;
   if (when === 'due') { where.push('si.planned_at <= ?'); params.push(endToday); }
   if (when === 'overdue') { where.push('si.planned_at < ?'); params.push(now()); }
   if (when === 'upcoming') { where.push('si.planned_at > ?'); params.push(endToday); }
 
-  const rows = all(`
+  const rows = await all(`
     SELECT si.*, s.name AS step_name, s.short_name, s.stage, s.doer_role, s.doer_user_id, s.options, s.fields, s.no,
       u.name AS doer_name,
       COALESCE(r.code, c.code, o.code) AS record_code,
@@ -351,7 +356,7 @@ export function listTasks({ user, scope = 'mine', when = 'due', stage, q } = {})
     LEFT JOIN requirements ocr ON ocr.id = oc.requirement_id
     WHERE ${where.join(' AND ')}
     ORDER BY si.planned_at ASC LIMIT 1000`, ...params);
-  const nowD = new Date();
+  const nowD = nowWall();
   let out = rows.map((r) => ({
     ...r,
     options: JSON.parse(r.options || '[]'),
@@ -366,10 +371,10 @@ export function listTasks({ user, scope = 'mine', when = 'due', stage, q } = {})
 }
 
 /** Full step tracker for one record (done + pending + not-reached) */
-export function tracker(entity_type, entity_id) {
+export async function tracker(entity_type, entity_id) {
   const stage = Object.keys(STAGE_ENTITY).find((k) => STAGE_ENTITY[k] === entity_type);
-  const steps = getSteps(stage);
-  const inst = all(`SELECT si.*, u.name AS done_by_name FROM step_instances si LEFT JOIN users u ON u.id = si.done_by
+  const steps = await getSteps(stage);
+  const inst = await all(`SELECT si.*, u.name AS done_by_name FROM step_instances si LEFT JOIN users u ON u.id = si.done_by
                     WHERE entity_type=? AND entity_id=?`, entity_type, entity_id);
   return steps.map((s) => {
     const i = inst.find((x) => x.step_code === s.code);

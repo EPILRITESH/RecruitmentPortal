@@ -48,9 +48,7 @@ export default function Login() {
           <Field label="Password"><input className="input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></Field>
           <ErrorBox error={error} />
           <Button className="w-full" loading={busy}>Sign in</Button>
-          <div className="rounded-lg bg-slate-100 p-3 text-xs text-slate-500">
-            First time? Admin: <b>admin@epil.local</b> / <b>admin123</b>. Team logins (khushi@, meet@, pc1@, ritesh@ …@epil.local) use <b>epil@123</b>. Change passwords in Settings.
-          </div>
+          <p className="text-xs text-slate-400">Forgot your password? Ask the portal admin to reset it in Settings → Users.</p>
         </form>
       </div>
     </div>

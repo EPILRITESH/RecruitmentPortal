@@ -13,20 +13,17 @@ export const AGENTS = {
   assistant: 'Recruitment Assistant (Ask anything)',
 };
 
-function apiKey() {
-  return process.env.ANTHROPIC_API_KEY || setting('anthropic_api_key') || '';
+async function apiKey() {
+  return process.env.ANTHROPIC_API_KEY || (await setting('anthropic_api_key')) || '';
 }
-export const aiAvailable = () => !!apiKey();
-export const agentEnabled = (agent) => setting(`ai_enabled_${agent}`, '1') === '1';
-const model = () => setting('ai_model', 'claude-opus-5-5');
-
-function client() {
-  return new Anthropic({ apiKey: apiKey() });
-}
+export const aiAvailable = async () => !!(await apiKey());
+export const agentEnabled = async (agent) => (await setting(`ai_enabled_${agent}`, '1')) === '1';
+const model = async () => (await setting('ai_model', 'claude-opus-5-5')) || 'claude-opus-5-5';
 
 async function callClaude({ system, content, schema, effort = 'medium' }) {
-  const response = await client().beta.messages.parse({
-    model: model(),
+  const client = new Anthropic({ apiKey: await apiKey() });
+  const response = await client.beta.messages.parse({
+    model: await model(),
     max_tokens: 16000,
     betas: ['server-side-fallback-2026-07-01'],
     fallbacks: 'default',
@@ -40,25 +37,25 @@ async function callClaude({ system, content, schema, effort = 'medium' }) {
 }
 
 function logRun(agent, entity_type, entity_id, input, output, mode, user_id) {
-  run('INSERT INTO ai_runs(agent, entity_type, entity_id, input, output, mode, user_id, created_at) VALUES(?,?,?,?,?,?,?,?)',
+  return run('INSERT INTO ai_runs(agent, entity_type, entity_id, input, output, mode, user_id, created_at) VALUES(?,?,?,?,?,?,?,?)',
     agent, entity_type ?? null, entity_id ?? null, JSON.stringify(input).slice(0, 4000), JSON.stringify(output).slice(0, 8000), mode, user_id ?? null, now());
 }
 
 async function withFallback(agent, ctx, claudeFn, offlineFn) {
-  if (aiAvailable() && agentEnabled(agent)) {
+  if ((await aiAvailable()) && (await agentEnabled(agent))) {
     try {
       const out = await claudeFn();
-      logRun(agent, ctx.entity_type, ctx.entity_id, ctx.input, out, 'claude', ctx.user_id);
+      await logRun(agent, ctx.entity_type, ctx.entity_id, ctx.input, out, 'claude', ctx.user_id);
       return { ...out, _mode: 'claude' };
     } catch (e) {
       console.error(`[ai:${agent}]`, e.message);
       const out = offlineFn();
-      logRun(agent, ctx.entity_type, ctx.entity_id, ctx.input, out, 'offline', ctx.user_id);
+      await logRun(agent, ctx.entity_type, ctx.entity_id, ctx.input, out, 'offline', ctx.user_id);
       return { ...out, _mode: 'offline', _error: e.message };
     }
   }
   const out = offlineFn();
-  logRun(agent, ctx.entity_type, ctx.entity_id, ctx.input, out, 'offline', ctx.user_id);
+  await logRun(agent, ctx.entity_type, ctx.entity_id, ctx.input, out, 'offline', ctx.user_id);
   return { ...out, _mode: 'offline' };
 }
 

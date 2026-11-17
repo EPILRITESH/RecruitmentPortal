@@ -1,6 +1,5 @@
 // Communication centre: Email (SMTP) + WhatsApp (click-to-chat link or WhatsApp Cloud API)
-import nodemailer from 'nodemailer';
-import { get, run, now, setting } from './db.js';
+import { get, run, now, setting, parse } from './db.js';
 
 export const DEFAULT_TEMPLATES = [
   { key: 'interest', name: 'Job opportunity – interested?', channel: 'whatsapp', subject: '',
@@ -21,9 +20,9 @@ export const DEFAULT_TEMPLATES = [
     body: 'Hello {{name}}, welcome to {{company}}! Please share your first-week feedback here: {{feedback_link}} – EPIL HR' },
 ];
 
-export function seedTemplates() {
+export async function seedTemplates() {
   for (const t of DEFAULT_TEMPLATES) {
-    run('INSERT INTO templates(key,name,channel,subject,body) VALUES(?,?,?,?,?) ON CONFLICT(key) DO NOTHING', t.key, t.name, t.channel, t.subject, t.body);
+    await run('INSERT INTO templates(key,name,channel,subject,body) VALUES(?,?,?,?,?) ON CONFLICT(key) DO NOTHING', t.key, t.name, t.channel, t.subject, t.body);
   }
 }
 
@@ -31,16 +30,16 @@ export function fillTemplate(text, vars) {
   return String(text || '').replace(/\{\{(\w+)\}\}/g, (_, k) => (vars[k] ?? '') === '' ? `[${k}]` : vars[k]);
 }
 
-export function candidateVars(candidateId, extra = {}) {
-  const c = get(`SELECT c.*, r.designation, r.company, r.salary_range, r.location AS job_location FROM candidates c
+export async function candidateVars(candidateId, extra = {}) {
+  const c = await get(`SELECT c.*, r.designation, r.company, r.salary_range, r.location AS job_location FROM candidates c
                  LEFT JOIN requirements r ON r.id = c.requirement_id WHERE c.id=?`, candidateId);
   if (!c) return {};
-  const base = setting('public_url', 'http://localhost:4000');
-  const pretty = (s) => (s ? new Date(String(s).replace(' ', 'T')).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: s.length > 10 ? 'short' : undefined }) : '');
+  const base = await setting('public_url', 'http://localhost:4000');
+  const pretty = (s) => (s ? parse(s).toLocaleString('en-IN', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: s.length > 10 ? 'short' : undefined }) : '');
   return {
     name: c.name, mobile: c.mobile, code: c.code, designation: c.designation || '', company: c.company || '', salary: c.salary_range || '',
     interview_at: pretty(c.interview_at), joining_date: c.joining_date ? pretty(c.joining_date) : '', offered_salary: c.offered_salary || '',
-    location: c.job_location || setting('office_address', 'Our office'),
+    location: c.job_location || (await setting('office_address', 'Our office')),
     apply_link: c.apply_token ? `${base}/apply/${c.apply_token}` : '',
     feedback_link: c.apply_token ? `${base}/feedback/${c.apply_token}` : '',
     ...extra,
@@ -53,14 +52,14 @@ export function waNumber(mobile) {
 }
 
 export async function sendWhatsApp({ to, body, candidate_id, template, user }) {
-  const mode = setting('whatsapp_mode', 'link'); // link | cloud
+  const mode = await setting('whatsapp_mode', 'link'); // link | cloud
   const number = waNumber(to);
   if (!number) throw new Error('Mobile number missing');
   let status = 'opened-link', error = null, link = `https://wa.me/${number}?text=${encodeURIComponent(body)}`;
   if (mode === 'cloud') {
     try {
-      const token = setting('whatsapp_token');
-      const phoneId = setting('whatsapp_phone_id');
+      const token = await setting('whatsapp_token');
+      const phoneId = await setting('whatsapp_phone_id');
       const r = await fetch(`https://graph.facebook.com/v21.0/${phoneId}/messages`, {
         method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ messaging_product: 'whatsapp', to: number, type: 'text', text: { body } }),
@@ -69,33 +68,35 @@ export async function sendWhatsApp({ to, body, candidate_id, template, user }) {
       status = 'sent'; link = null;
     } catch (e) { status = 'failed'; error = e.message; }
   }
-  run('INSERT INTO messages(candidate_id, channel, to_addr, body, template, status, error, user_id, created_at) VALUES(?,?,?,?,?,?,?,?,?)',
+  await run('INSERT INTO messages(candidate_id, channel, to_addr, body, template, status, error, user_id, created_at) VALUES(?,?,?,?,?,?,?,?,?)',
     candidate_id ?? null, 'whatsapp', number, body, template ?? null, status, error, user?.id ?? null, now());
   return { status, link, error };
 }
 
-function transport() {
-  const host = setting('smtp_host');
+async function transport() {
+  const host = await setting('smtp_host');
   if (!host) return null;
+  const nodemailer = (await import('nodemailer')).default;
   return nodemailer.createTransport({
-    host, port: Number(setting('smtp_port', 587)), secure: setting('smtp_secure', '0') === '1',
-    auth: { user: setting('smtp_user'), pass: setting('smtp_pass') },
+    host, port: Number(await setting('smtp_port', 587)), secure: (await setting('smtp_secure', '0')) === '1',
+    auth: { user: await setting('smtp_user'), pass: await setting('smtp_pass') },
   });
 }
 
 export async function sendEmail({ to, subject, body, candidate_id, template, user }) {
-  const t = transport();
+  let t = null;
+  try { t = await transport(); } catch (e) { console.error('SMTP unavailable', e.message); }
   let status = 'queued', error = null;
   if (!to) throw new Error('Email address missing');
   if (t) {
     try {
-      await t.sendMail({ from: setting('smtp_from', setting('smtp_user')), to, subject, text: body });
+      await t.sendMail({ from: (await setting('smtp_from')) || (await setting('smtp_user')), to, subject, text: body });
       status = 'sent';
     } catch (e) { status = 'failed'; error = e.message; }
   } else {
     error = 'SMTP not configured (Settings → Communication). Use the mailto link.';
   }
-  run('INSERT INTO messages(candidate_id, channel, to_addr, subject, body, template, status, error, user_id, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
+  await run('INSERT INTO messages(candidate_id, channel, to_addr, subject, body, template, status, error, user_id, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)',
     candidate_id ?? null, 'email', to, subject ?? null, body, template ?? null, status, error, user?.id ?? null, now());
   return { status, error, mailto: status === 'sent' ? null : `mailto:${to}?subject=${encodeURIComponent(subject || '')}&body=${encodeURIComponent(body)}` };
 }
