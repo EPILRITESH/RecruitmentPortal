@@ -1,11 +1,12 @@
 // Inward (requirements), Outward (candidates), Onboarding, Tasks, Communication, AI
 import { Router } from 'express';
 import multer from 'multer';
-import crypto from 'node:crypto';
-import { all, get, run, now, nextCode, logActivity } from '../db.js';
+import { all, get, run, now, nextCode, logActivity, fmt, parse } from '../db.js';
 import { requireAuth, requireRole } from '../auth.js';
-import { startWorkflow, completeStep, listTasks, tracker, replanOnboarding, httpError } from '../workflow.js';
-import { generateJD, parseCV, screenCandidate, draftMessage, askAssistant } from '../ai.js';
+import { startWorkflow, completeStep, listTasks, tracker, replanOnboarding, httpError, autoCompleteStep } from '../workflow.js';
+import { runAutomations } from '../automation.js';
+import { createCandidate, normMobile } from '../candidates.js';
+import { generateJD, parseCV, draftMessage, askAssistant } from '../ai.js';
 import { fillTemplate, candidateVars, sendWhatsApp, sendEmail } from '../notify.js';
 import { saveUpload } from '../storage.js';
 import { dashboardData } from './reports.js';
@@ -16,7 +17,6 @@ const memUpload = upload;
 
 const r = Router();
 r.use(requireAuth);
-const normMobile = (m) => String(m || '').replace(/\D/g, '').slice(-10);
 
 // ======================= TASKS (to-do machine) =======================
 r.get('/tasks', async (req, res) => {
@@ -69,6 +69,7 @@ r.post('/requirements', async (req, res) => {
   const id = Number(x.lastInsertRowid);
   await run(`INSERT INTO masters(type,name) VALUES('designation',?) ON CONFLICT DO NOTHING`, b.designation.trim().toUpperCase());
   await startWorkflow('requirement', id);
+  await runAutomations('requirement.created', { requirement_id: id, user: req.user });
   await logActivity('requirement', id, 'Requirement raised', `${b.designation} for ${b.company} by ${b.requirement_by}`, req.user.id);
   res.json({ id, code });
 });
@@ -95,6 +96,7 @@ r.put('/requirements/:id', async (req, res) => {
     await run(`UPDATE step_instances SET state='cancelled' WHERE entity_type='requirement' AND entity_id=? AND state='pending'`, req.params.id);
   }
   if (b.jd_status) await logActivity('requirement', Number(req.params.id), `JD ${b.jd_status}`, null, req.user.id);
+  if (b.jd_status === 'Approved') await autoCompleteStep('requirement', Number(req.params.id), 'S01', 'Done', 'Auto: JD approved', req.user);
   if (b.status) await logActivity('requirement', Number(req.params.id), `Status → ${b.status}`, b.remark, req.user.id);
   res.json({ ok: true });
 });
@@ -138,21 +140,22 @@ r.post('/candidates/parse-cv', memUpload.single('resume'), async (req, res) => {
 r.post('/candidates', upload.single('resume'), async (req, res) => {
   const b = req.body || {};
   if (!b.name || !b.mobile || !b.source) throw httpError(400, 'Name, mobile and source are required');
-  const mobile = normMobile(b.mobile);
-  const dups = await all(`SELECT code, status FROM candidates WHERE substr(replace(replace(mobile,' ',''),'-',''), -10)=? AND requirement_id IS ?`, mobile, b.requirement_id || null);
-  if (dups.length && b.force !== '1' && b.force !== true) throw httpError(409, `Duplicate: this mobile is already added for this requirement (${dups.map((d) => d.code).join(', ')})`);
-  const src = await get(`SELECT email FROM masters WHERE type='source' AND name=?`, b.source);
-  const code = await nextCode('candidates', 'OUT', 2891);
-  const x = await run(`INSERT INTO candidates(code, requirement_id, name, mobile, email, source, consultancy_email, current_company, experience_years, current_ctc, expected_ctc,
-                 notice_period, location, qualification, skills, resume_path, resume_url, resume_text, apply_token, created_by, created_at)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    code, b.requirement_id || null, b.name.trim(), mobile, b.email, b.source, b.consultancy_email || src?.email || null, b.current_company, b.experience_years ? Number(b.experience_years) : null,
-    b.current_ctc, b.expected_ctc, b.notice_period, b.location, b.qualification, b.skills, await saveUpload(req.file), b.resume_url, b.resume_text,
-    crypto.randomBytes(9).toString('base64url'), req.user.id, now());
-  const id = Number(x.lastInsertRowid);
-  await startWorkflow('candidate', id);
-  await logActivity('candidate', id, 'Candidate added', `Source: ${b.source}`, req.user.id);
-  res.json({ id, code });
+  const resume_path = await saveUpload(req.file);
+  const out = await createCandidate(b, { user: req.user, channel: b.channel || 'manual', force: b.force === '1' || b.force === true, resume_path });
+  if (out.duplicate) throw httpError(409, `Duplicate: this mobile is already added for this requirement (${out.existing.code}, ${out.existing.status})`);
+  res.json(out);
+});
+
+// Fix the interview date: updates Step 7 planned date and sends the invitation automatically
+r.post('/candidates/:id/schedule-interview', async (req, res) => {
+  const { interview_at, interviewer } = req.body || {};
+  if (!interview_at) throw httpError(400, 'Interview date & time required');
+  const when = fmt(parse(interview_at));
+  await run('UPDATE candidates SET interview_at=?, interviewer=COALESCE(?, interviewer), interview_reminded=0 WHERE id=?', when, interviewer || null, req.params.id);
+  await run(`UPDATE step_instances SET planned_at=? WHERE entity_type='candidate' AND entity_id=? AND step_code='S07' AND state='pending'`, when, req.params.id);
+  await logActivity('candidate', Number(req.params.id), 'Interview scheduled', when, req.user.id);
+  const sent = await runAutomations('interview.scheduled', { candidate_id: Number(req.params.id), user: req.user });
+  res.json({ ok: true, sent });
 });
 
 r.get('/candidates/:id', async (req, res) => {
@@ -200,16 +203,6 @@ r.post('/candidates/:id/reopen', requireRole('recruiter', 'approver'), async (re
   res.json({ ok: true });
 });
 
-r.post('/candidates/:id/screen', async (req, res) => {
-  const c = await get('SELECT * FROM candidates WHERE id=?', req.params.id);
-  if (!c) throw httpError(404, 'Candidate not found');
-  const reqm = c.requirement_id ? await get('SELECT * FROM requirements WHERE id=?', c.requirement_id) : null;
-  const out = await screenCandidate(c, reqm, req.user);
-  await run('UPDATE candidates SET ai_score=?, ai_summary=?, ai_questions=? WHERE id=?', Math.round(out.score),
-    JSON.stringify({ verdict: out.verdict, strengths: out.strengths, gaps: out.gaps, summary: out.summary, mode: out._mode }), JSON.stringify(out.questions), c.id);
-  await logActivity('candidate', c.id, `AI screening: ${Math.round(out.score)}/100 (${out.verdict})`, null, req.user.id);
-  res.json(out);
-});
 
 // ---- communication ----
 r.post('/candidates/:id/message', async (req, res) => {

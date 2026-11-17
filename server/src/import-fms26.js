@@ -8,6 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { useNodeSqlite, exec, all, get, run, now, parse, tx } from './db.js';
+import { migrateNode } from './migrate-node.js';
 import { seedSteps, getSteps } from './workflow.js';
 import { bootstrap } from './seed.js';
 
@@ -86,7 +87,7 @@ async function main() {
   const dbFile = process.env.DB_PATH || path.join(here, '..', 'data', 'recruitment.db');
   fs.mkdirSync(path.dirname(dbFile), { recursive: true });
   await useNodeSqlite(dbFile);
-  await exec(fs.readFileSync(path.join(here, 'schema.sql'), 'utf8'));
+  await migrateNode();
   console.log('Reading', file);
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(file);
@@ -185,8 +186,8 @@ async function main() {
         } else if (!pendingAdded && status !== 'Rejected' && status !== 'Dropped' && status !== 'Future Hold') {
           // first open step after the last done one => pending (only if it is the logical next step)
           const isNext = !lastDone || expected === m.code || (!expected && !steps[m.code].optional);
-          if (isNext && (planned || !lastDone)) {
-            await putStep('candidate', id, m.code, { planned: planned || created, state: 'pending' });
+          if (isNext) {
+            await putStep('candidate', id, m.code, { planned: planned || lastDone?.actual || created, state: 'pending' });
             stage = steps[m.code].short_name;
             pendingAdded = true;
           }

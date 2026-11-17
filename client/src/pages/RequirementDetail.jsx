@@ -5,6 +5,7 @@ import { api, auth, fmtDate, relTime } from '../api';
 import { useApi, Spinner, Card, Button, StatusBadge, Badge, Empty, Select, toast, ErrorBox } from '../components/ui';
 import { StepTracker, TaskModal } from '../components/workflow';
 import { RequirementForm, CandidateForm } from '../components/forms';
+import JobPosting from '../components/JobPosting';
 
 export default function RequirementDetail() {
   const { id } = useParams();
@@ -88,6 +89,8 @@ export default function RequirementDetail() {
               {canApprove && r.jd_status !== 'Approved' && <Button size="sm" variant="success" icon={CheckCircle2} onClick={() => saveJd('Approved')} disabled={!jd}>Approve JD</Button>}
             </div>
           </Card>
+
+          <JobPosting requirement={r} onChange={reload} />
 
           <Card title={`Candidates (${data.candidates.length})`} bodyClass="p-0"
             actions={<div className="flex gap-1">{funnel.map((f) => f.n > 0 && <StatusBadge key={f.s} value={f.s} />)}</div>}>

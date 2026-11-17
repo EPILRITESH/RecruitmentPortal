@@ -3,7 +3,9 @@ import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { useNodeSqlite, exec } from './db.js';
+import { useNodeSqlite } from './db.js';
+import { migrateNode } from './migrate-node.js';
+import { runHourly } from './automation.js';
 import { useLocalDir } from './storage.js';
 import { createApp, errorHandler } from './app.js';
 
@@ -11,7 +13,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = process.env.DB_PATH || path.join(here, '..', 'data', 'recruitment.db');
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 await useNodeSqlite(DB_PATH);
-await exec(fs.readFileSync(path.join(here, 'schema.sql'), 'utf8'));
+await migrateNode();
 await useLocalDir(process.env.UPLOAD_DIR || path.join(here, '..', 'uploads'));
 
 const app = createApp();
@@ -26,3 +28,6 @@ errorHandler(app);
 
 const PORT = Number(process.env.PORT || 4000);
 app.listen(PORT, () => console.log(`EPIL Recruitment Portal running on http://localhost:${PORT}`));
+
+// same job as the Cloudflare cron trigger: interview reminders + morning digest
+setInterval(() => runHourly().catch((e) => console.error('[cron]', e.message)), 60 * 60 * 1000);

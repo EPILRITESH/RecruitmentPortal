@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, ListChecks, Siren, ClipboardList, Users, UserCheck, Bot, BarChart3, Wallet, Settings, BookOpen, LogOut, Menu, X, Globe,
+  LayoutDashboard, ListChecks, Siren, ClipboardList, Users, UserCheck, Bot, BarChart3, Wallet, Settings, BookOpen, LogOut, Menu, X, Globe, PieChart, Table2, Send,
 } from 'lucide-react';
 import { api, auth, ROLE_LABEL } from '../api';
 
 const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
+  { to: '/mis', label: 'MIS Dashboard', icon: PieChart },
   { to: '/tasks', label: 'My Tasks', icon: ListChecks, badge: 'tasks' },
+  { to: '/plan-actual', label: 'Plan vs Actual (FMS)', icon: Table2 },
   { to: '/rescue', label: 'Rescue Board', icon: Siren, badge: 'overdue' },
+  { to: '/outbox', label: 'Outbox (WhatsApp/Email)', icon: Send, badge: 'outbox' },
   { section: 'Recruitment' },
   { to: '/requirements', label: 'Inward – Requirements', icon: ClipboardList },
   { to: '/candidates', label: 'Outward – Candidates', icon: Users },
@@ -31,7 +34,8 @@ export default function Layout() {
 
   useEffect(() => {
     setOpen(false);
-    api('/tasks/summary').then((s) => setCounts({ tasks: s.overdue + s.today, overdue: s.overdue })).catch(() => {});
+    api('/tasks/summary').then((s) => setCounts((c) => ({ ...c, tasks: s.overdue + s.today, overdue: s.overdue }))).catch(() => {});
+    api('/outbox?status=queued').then((o) => setCounts((c) => ({ ...c, outbox: o.counts.find((x) => x.status === 'queued')?.n || 0 }))).catch(() => {});
   }, [loc.pathname]);
 
   const logout = () => { auth.clear(); nav('/login'); };

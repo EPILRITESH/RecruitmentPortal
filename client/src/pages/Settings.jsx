@@ -35,20 +35,44 @@ function General() {
           ))}
         </div>
       </Card>
-      <Card title="Communication" actions={<Button size="sm" icon={Save} onClick={save}>Save</Button>}>
+      <Card title="Communication – automatic WhatsApp & email" actions={<Button size="sm" icon={Save} onClick={save}>Save</Button>}>
+        <div className="mb-2 text-sm font-medium text-slate-700">WhatsApp</div>
         <div className="grid gap-3 sm:grid-cols-3">
-          <Field label="WhatsApp mode" hint="Link = opens WhatsApp Web/app with the message ready. Cloud = sends via Meta WhatsApp Cloud API.">
-            <Select value={f.whatsapp_mode || 'link'} onChange={set('whatsapp_mode')} options={[{ value: 'link', label: 'Click-to-chat link (free)' }, { value: 'cloud', label: 'WhatsApp Cloud API' }]} />
+          <Field label="WhatsApp mode" hint="Cloud API = messages go out by themselves (Meta WhatsApp Business). Link = Outbox with one-click send.">
+            <Select value={f.whatsapp_mode || 'link'} onChange={set('whatsapp_mode')} options={[{ value: 'link', label: 'Click-to-send (free)' }, { value: 'cloud', label: 'WhatsApp Cloud API (automatic)' }]} />
           </Field>
-          <Field label="WhatsApp phone number ID"><input className="input" value={f.whatsapp_phone_id || ''} onChange={set('whatsapp_phone_id')} /></Field>
-          <Field label="WhatsApp access token"><input className="input" type="password" value={f.whatsapp_token || ''} onChange={set('whatsapp_token')} /></Field>
-          <Field label="SMTP host"><input className="input" value={f.smtp_host || ''} onChange={set('smtp_host')} placeholder="smtp.gmail.com" /></Field>
-          <Field label="SMTP port"><input className="input" value={f.smtp_port || ''} onChange={set('smtp_port')} placeholder="587" /></Field>
-          <Field label="SSL (port 465)"><Select value={f.smtp_secure || '0'} onChange={set('smtp_secure')} options={[{ value: '0', label: 'No (STARTTLS)' }, { value: '1', label: 'Yes' }]} /></Field>
-          <Field label="SMTP user"><input className="input" value={f.smtp_user || ''} onChange={set('smtp_user')} /></Field>
-          <Field label="SMTP password / app password"><input className="input" type="password" value={f.smtp_pass || ''} onChange={set('smtp_pass')} /></Field>
-          <Field label="From address"><input className="input" value={f.smtp_from || ''} onChange={set('smtp_from')} /></Field>
+          <Field label="Phone number ID"><input className="input" value={f.whatsapp_phone_id || ''} onChange={set('whatsapp_phone_id')} /></Field>
+          <Field label="Access token"><input className="input" type="password" value={f.whatsapp_token || ''} onChange={set('whatsapp_token')} /></Field>
         </div>
+        <div className="mb-2 mt-5 text-sm font-medium text-slate-700">Email</div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="Email provider" hint="Brevo (free 300/day) or Resend work on Cloudflare. SMTP only when running on your own server.">
+            <Select value={f.email_provider || ''} onChange={set('email_provider')} placeholder="Not set – use Outbox" options={[{ value: 'brevo', label: 'Brevo API' }, { value: 'resend', label: 'Resend API' }, { value: 'smtp', label: 'SMTP (Node server only)' }]} />
+          </Field>
+          <Field label="Provider API key"><input className="input" type="password" value={f.email_api_key || ''} onChange={set('email_api_key')} /></Field>
+          <Field label="From address" hint="Must be verified with the provider"><input className="input" value={f.smtp_from || ''} onChange={set('smtp_from')} placeholder="hr@yourdomain.com" /></Field>
+          {f.email_provider === 'smtp' && <>
+            <Field label="SMTP host"><input className="input" value={f.smtp_host || ''} onChange={set('smtp_host')} /></Field>
+            <Field label="SMTP port"><input className="input" value={f.smtp_port || ''} onChange={set('smtp_port')} /></Field>
+            <Field label="SSL (465)"><Select value={f.smtp_secure || '0'} onChange={set('smtp_secure')} options={[{ value: '0', label: 'No' }, { value: '1', label: 'Yes' }]} /></Field>
+            <Field label="SMTP user"><input className="input" value={f.smtp_user || ''} onChange={set('smtp_user')} /></Field>
+            <Field label="SMTP password"><input className="input" type="password" value={f.smtp_pass || ''} onChange={set('smtp_pass')} /></Field>
+          </>}
+        </div>
+      </Card>
+      <Card title="Screening & applications" actions={<Button size="sm" icon={Save} onClick={save}>Save</Button>}>
+        <div className="grid gap-3 sm:grid-cols-4">
+          <Field label="Auto-screening of new candidates">
+            <Select value={f.auto_screen || 'score'} onChange={set('auto_screen')} options={[{ value: 'off', label: 'Off – manual only' }, { value: 'score', label: 'Give score only' }, { value: 'decide', label: 'Score + complete Step 4' }]} />
+          </Field>
+          <Field label="Accept when score ≥"><input type="number" className="input" value={f.screen_accept || ''} onChange={set('screen_accept')} /></Field>
+          <Field label="Reject when score <"><input type="number" className="input" value={f.screen_reject || ''} onChange={set('screen_reject')} /></Field>
+          <Field label="Auto-reject low scores"><Select value={f.auto_reject || '0'} onChange={set('auto_reject')} options={[{ value: '0', label: 'No – recruiter decides' }, { value: '1', label: 'Yes' }]} /></Field>
+        </div>
+        <Field label="Webhook for job platforms / Zapier / Make (applications come straight into the portal)" className="mt-4"
+          hint='POST JSON: {"name","mobile","email","platform":"NAUKRI","job_code":"IN-170","resume_url",...} – keep this URL private.'>
+          <input className="input font-mono text-xs" readOnly value={f.inbound_url || ''} onFocus={(e) => e.target.select()} />
+        </Field>
       </Card>
     </div>
   );
@@ -192,14 +216,86 @@ function Templates() {
   );
 }
 
+function Platforms() {
+  const { data, reload } = useApi('/platforms');
+  const [edit, setEdit] = useState(null);
+  if (!data) return <Spinner />;
+  const save = async () => { await api(`/platforms/${encodeURIComponent(edit.name)}`, { method: 'PUT', body: edit }); toast('Platform saved'); setEdit(null); reload(); };
+  const M = { careers: 'Careers page (auto)', email: 'Email to consultancy (auto)', api: 'API / webhook (auto)', assisted: 'Assisted – copy & open site', whatsapp: 'WhatsApp share' };
+  return (
+    <Card title="Job platforms" bodyClass="p-0" actions={<Button size="sm" icon={Plus} onClick={() => setEdit({ name: '', method: 'assisted', active: 1, sort: 50 })}>Add platform</Button>}>
+      <p className="px-4 pt-3 text-xs text-slate-500">Work India, Apna, LinkedIn, Naukri and Indeed do not give small employers an open posting API, so they are “assisted”: the portal copies the post and opens the site. If a platform gives you API / partner access (or you use Zapier / Make), switch it to “API” and paste the endpoint – posting then happens automatically.</p>
+      <table className="w-full">
+        <thead><tr><th className="th">Platform</th><th className="th">How we post</th><th className="th">Email / site / API</th><th className="th">Active</th><th className="th" /></tr></thead>
+        <tbody>{data.map((p) => (
+          <tr key={p.name}><td className="td font-medium">{p.name}</td><td className="td text-sm">{M[p.method]}</td>
+            <td className="td max-w-xs truncate text-xs text-slate-500">{p.email || p.api_url || p.post_url || '—'}</td>
+            <td className="td">{p.active ? <Badge color="green">yes</Badge> : <Badge>no</Badge>}</td>
+            <td className="td text-right"><Button size="sm" variant="ghost" onClick={() => setEdit({ ...p, api_key: p.api_key ? '••••' : '' })}>Edit</Button></td></tr>
+        ))}</tbody>
+      </table>
+      <Modal open={!!edit} onClose={() => setEdit(null)} title={edit?.name ? `Platform – ${edit.name}` : 'Add platform'} footer={<><Button variant="secondary" onClick={() => setEdit(null)}>Cancel</Button><Button onClick={save} disabled={!edit?.name}>Save</Button></>}>
+        {edit && <div className="grid gap-3">
+          <Field label="Name (same as candidate source)"><input className="input" value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value.toUpperCase() })} /></Field>
+          <Field label="How to post"><Select value={edit.method} onChange={(e) => setEdit({ ...edit, method: e.target.value })} options={Object.entries(M).map(([v, l]) => ({ value: v, label: l }))} /></Field>
+          {edit.method === 'email' && <Field label="Consultancy email"><input className="input" value={edit.email || ''} onChange={(e) => setEdit({ ...edit, email: e.target.value })} /></Field>}
+          {edit.method === 'assisted' && <Field label="Employer page to post a job"><input className="input" value={edit.post_url || ''} onChange={(e) => setEdit({ ...edit, post_url: e.target.value })} /></Field>}
+          {edit.method === 'api' && <>
+            <Field label="API endpoint (POST JSON)" hint="Receives code, title, company, salary, description, apply_link…"><input className="input" value={edit.api_url || ''} onChange={(e) => setEdit({ ...edit, api_url: e.target.value })} /></Field>
+            <Field label="API key (sent as Bearer)"><input className="input" type="password" value={edit.api_key || ''} onChange={(e) => setEdit({ ...edit, api_key: e.target.value })} /></Field>
+          </>}
+          <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={!!edit.active} onChange={(e) => setEdit({ ...edit, active: e.target.checked ? 1 : 0 })} />Active</label>
+        </div>}
+      </Modal>
+    </Card>
+  );
+}
+
+function Automations() {
+  const { data, reload } = useApi('/automations');
+  const [add, setAdd] = useState(null);
+  if (!data) return <Spinner />;
+  const toggle = async (a) => { await api(`/automations/${a.id}`, { method: 'PUT', body: { enabled: a.enabled ? 0 : 1 } }); reload(); };
+  const setTpl = async (a, key) => { await api(`/automations/${a.id}`, { method: 'PUT', body: { template_key: key } }); toast('Saved'); reload(); };
+  const del = async (a) => { if (window.confirm('Delete this rule?')) { await api(`/automations/${a.id}`, { method: 'DELETE' }); reload(); } };
+  return (
+    <Card title="Automation rules – what happens on each action" bodyClass="p-0" actions={<Button size="sm" icon={Plus} onClick={() => setAdd({ event: 'S04:Accepted', channel: 'whatsapp', recipient: 'candidate', template_key: '' })}>Add rule</Button>}>
+      <table className="w-full">
+        <thead><tr><th className="th">When</th><th className="th">Send</th><th className="th">To</th><th className="th">Message template</th><th className="th">Also</th><th className="th">On</th><th className="th" /></tr></thead>
+        <tbody>{data.rules.map((a) => (
+          <tr key={a.id} className={a.enabled ? '' : 'opacity-50'}>
+            <td className="td text-sm">{data.events[a.event] || a.event}</td>
+            <td className="td"><Badge color={a.channel === 'email' ? 'blue' : 'green'}>{a.channel}</Badge></td>
+            <td className="td text-sm">{data.recipients[a.recipient]}</td>
+            <td className="td"><Select value={a.template_key} onChange={(e) => setTpl(a, e.target.value)} options={data.templates.filter((t) => t.channel === a.channel).map((t) => ({ value: t.key, label: t.name }))} /></td>
+            <td className="td text-xs">{a.complete_step ? `completes Step ${Number(a.complete_step.slice(1))}` : ''}</td>
+            <td className="td"><input type="checkbox" className="h-4 w-4 accent-indigo-600" checked={!!a.enabled} onChange={() => toggle(a)} /></td>
+            <td className="td"><button onClick={() => del(a)} className="text-slate-400 hover:text-rose-600"><Trash2 className="h-4 w-4" /></button></td>
+          </tr>
+        ))}</tbody>
+      </table>
+      <Modal open={!!add} onClose={() => setAdd(null)} title="Add automation rule" footer={<><Button variant="secondary" onClick={() => setAdd(null)}>Cancel</Button><Button disabled={!add?.template_key} onClick={async () => { await api('/automations', { method: 'POST', body: add }); setAdd(null); reload(); }}>Add</Button></>}>
+        {add && <div className="grid gap-3">
+          <Field label="When"><Select value={add.event} onChange={(e) => setAdd({ ...add, event: e.target.value })} options={Object.entries(data.events).map(([v, l]) => ({ value: v, label: l }))} /></Field>
+          <Field label="Channel"><Select value={add.channel} onChange={(e) => setAdd({ ...add, channel: e.target.value, template_key: '' })} options={['whatsapp', 'email']} /></Field>
+          <Field label="To"><Select value={add.recipient} onChange={(e) => setAdd({ ...add, recipient: e.target.value })} options={Object.entries(data.recipients).map(([v, l]) => ({ value: v, label: l }))} /></Field>
+          <Field label="Template"><Select value={add.template_key} onChange={(e) => setAdd({ ...add, template_key: e.target.value })} placeholder="Select" options={data.templates.filter((t) => t.channel === add.channel).map((t) => ({ value: t.key, label: t.name }))} /></Field>
+        </div>}
+      </Modal>
+    </Card>
+  );
+}
+
 export default function Settings() {
   const [tab, setTab] = useState('general');
   return (
     <div>
       <PageHeader title="Settings" subtitle="Admin only – team, steps, master lists, templates, AI and communication." />
-      <div className="mb-5"><Tabs value={tab} onChange={setTab} tabs={[{ value: 'general', label: 'General & AI' }, { value: 'steps', label: 'Steps & TAT' }, { value: 'users', label: 'Users' }, { value: 'masters', label: 'Master lists' }, { value: 'templates', label: 'Message templates' }, { value: 'holidays', label: 'Holidays' }]} /></div>
+      <div className="mb-5"><Tabs value={tab} onChange={setTab} tabs={[{ value: 'general', label: 'General & AI' }, { value: 'steps', label: 'Steps & TAT' }, { value: 'platforms', label: 'Job platforms' }, { value: 'automations', label: 'Automations' }, { value: 'users', label: 'Users' }, { value: 'masters', label: 'Master lists' }, { value: 'templates', label: 'Message templates' }, { value: 'holidays', label: 'Holidays' }]} /></div>
       {tab === 'general' && <General />}
       {tab === 'steps' && <Steps />}
+      {tab === 'platforms' && <Platforms />}
+      {tab === 'automations' && <Automations />}
       {tab === 'users' && <Users />}
       {tab === 'masters' && <Masters />}
       {tab === 'templates' && <Templates />}

@@ -89,8 +89,9 @@ r.put('/templates/:key', requireRole('recruiter', 'hr'), async (req, res) => {
 
 // ---- settings ----
 const PUBLIC_SETTINGS = ['company_name', 'office_address', 'public_url', 'work_start_hour', 'work_end_hour', 'weekly_off', 'whatsapp_mode', 'whatsapp_phone_id',
-  'smtp_host', 'smtp_port', 'smtp_user', 'smtp_from', 'smtp_secure', 'ai_model', 'escalation_hours', ...Object.keys(AGENTS).map((a) => `ai_enabled_${a}`)];
-const SECRET_SETTINGS = ['anthropic_api_key', 'smtp_pass', 'whatsapp_token'];
+  'smtp_host', 'smtp_port', 'smtp_user', 'smtp_from', 'smtp_secure', 'ai_model', 'escalation_hours', 'email_provider',
+  'auto_screen', 'screen_accept', 'screen_reject', 'auto_reject', ...Object.keys(AGENTS).map((a) => `ai_enabled_${a}`)];
+const SECRET_SETTINGS = ['anthropic_api_key', 'smtp_pass', 'whatsapp_token', 'email_api_key'];
 
 r.get('/settings', requireRole(), async (req, res) => {
   const out = {};
@@ -99,6 +100,10 @@ r.get('/settings', requireRole(), async (req, res) => {
   out.ai_available = await aiAvailable();
   out.ai_env_key = !!process.env.ANTHROPIC_API_KEY;
   out.agents = AGENTS;
+  out.inbound_url = `${await setting('public_url', '')}/api/public/inbound/${await setting('inbound_token', '')}`;
+  if (!out.auto_screen) out.auto_screen = 'score';
+  if (!out.screen_accept) out.screen_accept = '70';
+  if (!out.screen_reject) out.screen_reject = '30';
   res.json(out);
 });
 r.put('/settings', requireRole(), async (req, res) => {

@@ -17,6 +17,9 @@ import Reports from './pages/Reports';
 import Payments from './pages/Payments';
 import Settings from './pages/Settings';
 import ProcessGuide from './pages/ProcessGuide';
+import MIS from './pages/MIS';
+import PlanActual from './pages/PlanActual';
+import Outbox from './pages/Outbox';
 import Apply from './public/Apply';
 import Careers from './public/Careers';
 import Feedback from './public/Feedback';
@@ -49,6 +52,9 @@ export default function App() {
           <Route path="/payments" element={<Payments />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/guide" element={<ProcessGuide />} />
+          <Route path="/mis" element={<MIS />} />
+          <Route path="/plan-actual" element={<PlanActual />} />
+          <Route path="/outbox" element={<Outbox />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

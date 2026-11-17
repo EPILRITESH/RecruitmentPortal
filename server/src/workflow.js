@@ -3,6 +3,7 @@
 // When a step is completed, the engine stamps the actual time, computes delay,
 // applies the outcome (reject / hold / select ...) and activates the next step with a planned date.
 import { all, get, run, now, nowWall, fmt, parse, setting, nextCode, logActivity, tx } from './db.js';
+import { runAutomations } from './automation.js';
 
 // ---------------------------------------------------------------------------
 // Step definitions (one clean list – fixes the swapped/blank names in the old STEPS tab)
@@ -26,7 +27,8 @@ export const STEP_DEFS = [
   { code: 'S05', no: 5, stage: 'outward', name: 'Interested or Not', short_name: 'Interested?', doer_role: 'recruiter', how: 'Call / WhatsApp', tat_days: 3,
     options: [{ value: 'Interested', label: 'Interested', color: 'green' }, { value: 'Not Interested', label: 'Not Interested', color: 'red', outcome: 'drop' }] },
   { code: 'S06', no: 6, stage: 'outward', name: 'Application Form Filled / Resume Attached', short_name: 'Form Filled', doer_role: 'recruiter', how: 'Candidate self-form link (auto)', tat_days: 4,
-    options: [{ value: 'Form Filled', label: 'Form Filled', color: 'green' }, { value: 'Not Filled', label: 'Not Filled – Drop', color: 'red', outcome: 'drop' }] },
+    options: [{ value: 'Form Filled', label: 'Form Filled', color: 'green' }, { value: 'Not Filled', label: 'Not Filled – Drop', color: 'red', outcome: 'drop' }],
+    fields: [{ key: 'interview_at', label: 'Interview date & time (sends invite)', type: 'datetime-local' }] },
   { code: 'S07', no: 7, stage: 'outward', name: 'Interview Scheduled – Come or Not', short_name: 'Came for Interview?', doer_role: 'recruiter', how: 'WhatsApp reminder + call', tat_days: 2,
     options: [{ value: 'Came', label: 'Came', color: 'green' }, { value: 'Rescheduled', label: 'Rescheduled', color: 'amber', outcome: 'replan' }, { value: 'Not Came', label: 'Did not come', color: 'red', outcome: 'drop' }],
     fields: [{ key: 'interview_at', label: 'Interview date & time', type: 'datetime-local' }, { key: 'interviewer', label: 'Interviewer', type: 'text' }] },
@@ -228,8 +230,43 @@ export async function completeStep(instanceId, { result, remark, data = {} }, us
         await run(`UPDATE candidates SET stage='Handed to Onboarding' WHERE id=?`, entity_id);
       }
     }
+
+    // on-action automations (WhatsApp / email / auto steps)
+    let candidate_id = null;
+    if (entity_type === 'candidate') candidate_id = entity_id;
+    if (entity_type === 'onboarding') candidate_id = (await get('SELECT candidate_id FROM onboardings WHERE id=?', entity_id))?.candidate_id;
+    const ctx = { candidate_id, requirement_id: entity_type === 'requirement' ? entity_id : null, remark, user };
+    if (data.interview_at && candidate_id) await runAutomations('interview.scheduled', ctx);
+    await runAutomations(`${step.code}:${result}`, ctx);
     return get('SELECT * FROM step_instances WHERE id=?', inst.id);
   });
+}
+
+/** Active candidates with no waiting step (old sheet rows without a planned date): create their next step. */
+export async function repairStuckCandidates() {
+  const stuck = await all(`SELECT c.id FROM candidates c WHERE c.status='Active'
+    AND NOT EXISTS(SELECT 1 FROM step_instances si WHERE si.entity_type='candidate' AND si.entity_id=c.id AND si.state='pending')`);
+  for (const { id } of stuck) {
+    const last = await get(`SELECT si.step_code, si.result, si.actual_at FROM step_instances si JOIN steps s ON s.code=si.step_code
+      WHERE si.entity_type='candidate' AND si.entity_id=? AND si.state='done' ORDER BY s.no DESC LIMIT 1`, id);
+    if (!last) { await activateStep('candidate', id, 'S04'); continue; }
+    const step = await getStep(last.step_code);
+    const opt = step.options.find((o) => o.value === last.result);
+    const next = opt?.next ? await getStep(opt.next) : await nextDefaultStep(step);
+    if (next) {
+      await activateStep('candidate', id, next.code, parse(last.actual_at) || nowWall());
+      await run('UPDATE candidates SET stage=? WHERE id=?', next.short_name, id);
+    }
+  }
+  return stuck.length;
+}
+
+/** Mark a pending step done because the action happened in the portal (job posted, JD approved...). */
+export async function autoCompleteStep(entity_type, entity_id, step_code, result, remark, user) {
+  const inst = await get(`SELECT id FROM step_instances WHERE entity_type=? AND entity_id=? AND step_code=? AND state='pending'`, entity_type, entity_id, step_code);
+  if (!inst) return false;
+  await completeStep(inst.id, { result, remark }, user);
+  return true;
 }
 
 async function applyFieldData(entity_type, entity_id, data) {

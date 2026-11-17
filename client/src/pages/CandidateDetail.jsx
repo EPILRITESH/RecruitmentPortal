@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { MessageCircle, Mail, Phone, Sparkles, FileText, Link2, Copy, RotateCcw, Pencil, Save, Upload } from 'lucide-react';
+import { MessageCircle, Mail, Phone, Sparkles, FileText, Link2, Copy, RotateCcw, Pencil, Save, Upload, CalendarClock } from 'lucide-react';
 import { api, auth, fileUrl, fmtDate, relTime } from '../api';
-import { useApi, Spinner, Card, Button, StatusBadge, Badge, Field, ErrorBox, toast } from '../components/ui';
+import { useApi, Spinner, Card, Button, StatusBadge, Badge, Field, ErrorBox, toast, Modal } from '../components/ui';
 import { StepTracker, TaskModal } from '../components/workflow';
 import MessageModal from '../components/MessageModal';
 
@@ -20,6 +20,7 @@ export default function CandidateDetail() {
   const [screening, setScreening] = useState(false);
   const [edit, setEdit] = useState(null);
   const [aiErr, setAiErr] = useState(null);
+  const [iv, setIv] = useState(null);
 
   if (error) return <ErrorBox error={error} />;
   if (loading && !data) return <Spinner />;
@@ -64,6 +65,7 @@ export default function CandidateDetail() {
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
+          {c.status === 'Active' && <Button variant="secondary" icon={CalendarClock} onClick={() => setIv({ interview_at: c.interview_at?.replace(' ', 'T').slice(0, 16) || '', interviewer: c.interviewer || '' })}>{c.interview_at ? 'Re-schedule interview' : 'Schedule interview'}</Button>}
           <a href={`tel:${c.mobile}`}><Button variant="secondary" icon={Phone}>Call</Button></a>
           <Button variant="whatsapp" icon={MessageCircle} onClick={() => setMsg(templateFor || 'x')}>WhatsApp</Button>
           <Button variant="secondary" icon={Mail} onClick={() => setMsg('email')}>Email</Button>
@@ -160,6 +162,19 @@ export default function CandidateDetail() {
         </div>
       </div>
 
+      {iv && (
+        <Modal open onClose={() => setIv(null)} title="Schedule interview"
+          footer={<><Button variant="secondary" onClick={() => setIv(null)}>Cancel</Button><Button disabled={!iv.interview_at} onClick={async () => {
+            await api(`/candidates/${id}/schedule-interview`, { method: 'POST', body: iv });
+            toast('Interview scheduled – invitation sent / queued'); setIv(null); reload();
+          }}>Save & send invite</Button></>}>
+          <div className="space-y-3">
+            <Field label="Date & time"><input type="datetime-local" className="input" value={iv.interview_at} onChange={(e) => setIv({ ...iv, interview_at: e.target.value })} /></Field>
+            <Field label="Interviewer"><input className="input" value={iv.interviewer} onChange={(e) => setIv({ ...iv, interviewer: e.target.value })} /></Field>
+            <p className="text-xs text-slate-500">Step 7 gets this as its planned date. WhatsApp + email invitation go out automatically, and a reminder the day before.</p>
+          </div>
+        </Modal>
+      )}
       {task && <TaskModal task={{ ...task, title: c.name, record_code: c.code, designation: c.designation, company: c.company }} onClose={() => setTask(null)} onDone={reload} />}
       {msg && <MessageModal open candidate={c} defaultTemplate={['x', 'email'].includes(msg) ? '' : msg} defaultChannel={msg === 'email' ? 'email' : 'whatsapp'} onClose={() => setMsg(null)} onSent={reload} />}
     </div>

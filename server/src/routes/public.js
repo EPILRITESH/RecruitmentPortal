@@ -1,9 +1,9 @@
 // Public (no login) pages: candidate application form, careers page, joinee feedback.
 // These replace the Google Forms that candidates used to fill.
 import { Router } from 'express';
-import crypto from 'node:crypto';
-import { all, get, run, now, nextCode, logActivity, setting } from '../db.js';
-import { completeStep, startWorkflow, httpError } from '../workflow.js';
+import { all, get, run, logActivity, setting } from '../db.js';
+import { completeStep, httpError } from '../workflow.js';
+import { createCandidate } from '../candidates.js';
 import { upload } from './recruit.js';
 import { saveUpload } from '../storage.js';
 
@@ -34,27 +34,43 @@ r.post('/apply/:token', upload.single('resume'), async (req, res) => {
   res.json({ ok: true });
 });
 
-// ---- careers page / walk-in QR ----
-r.get('/jobs', async (req, res) => res.json(await all(`SELECT id, code, designation, company, salary_range, location, experience, qualification, openings - filled AS openings
-                                           FROM requirements WHERE status='Open' ORDER BY id DESC`)));
+// ---- careers page / platform apply links (?job=IN-170&src=WORK INDIA) ----
+r.get('/jobs', async (req, res) => res.json(await all(`SELECT id, code, designation, company, salary_range, location, experience, qualification, openings - filled AS openings,
+                                           jd_status, request_date FROM requirements WHERE status='Open' ORDER BY id DESC`)));
+r.get('/jobs/:code', async (req, res) => {
+  const j = await get(`SELECT id, code, designation, company, salary_range, location, experience, qualification, skills, openings - filled AS openings, jd_text, status, request_date
+                       FROM requirements WHERE code=? OR id=?`, req.params.code, Number(req.params.code) || -1);
+  if (!j || j.status !== 'Open') throw httpError(404, 'This job is closed');
+  res.json(j);
+});
+
+async function sourceFrom(src) {
+  const name = String(src || '').trim().toUpperCase();
+  if (name && (await get('SELECT name FROM platforms WHERE name=?', name))) return name;
+  return 'CAREERS PAGE / WALK-IN';
+}
 
 r.post('/jobs/:id/apply', upload.single('resume'), async (req, res) => {
-  const job = await get(`SELECT id FROM requirements WHERE id=? AND status='Open'`, req.params.id);
+  const job = await get(`SELECT id FROM requirements WHERE (id=? OR code=?) AND status='Open'`, Number(req.params.id) || -1, req.params.id);
   if (!job) throw httpError(404, 'This job is closed');
   const b = req.body || {};
-  const mobile = String(b.mobile || '').replace(/\D/g, '').slice(-10);
-  if (!b.name || mobile.length !== 10) throw httpError(400, 'Name and a 10-digit mobile number are required');
-  const dup = await get('SELECT id FROM candidates WHERE mobile=? AND requirement_id=?', mobile, job.id);
-  if (dup) return res.json({ ok: true, duplicate: true });
-  const code = await nextCode('candidates', 'OUT', 2891);
-  const x = await run(`INSERT INTO candidates(code, requirement_id, name, mobile, email, source, experience_years, current_ctc, expected_ctc, notice_period, location, qualification, skills, resume_path, apply_token, created_at)
-                 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-    code, job.id, b.name.trim(), mobile, b.email, b.source || 'CAREERS PAGE / WALK-IN', b.experience_years || null, b.current_ctc, b.expected_ctc, b.notice_period, b.location,
-    b.qualification, b.skills, await saveUpload(req.file), crypto.randomBytes(9).toString('base64url'), now());
-  const id = Number(x.lastInsertRowid);
-  await startWorkflow('candidate', id);
-  await logActivity('candidate', id, 'Applied via careers page', null, null);
-  res.json({ ok: true });
+  const resume_path = await saveUpload(req.file);
+  const out = await createCandidate({ ...b, requirement_id: job.id, source: await sourceFrom(b.source) }, { channel: 'careers', resume_path });
+  res.json({ ok: true, duplicate: !!out.duplicate });
+});
+
+// ---- webhook for job platforms / Zapier / Make / partner APIs ----
+// POST /api/public/inbound/<token>   JSON or multipart:
+// { name, mobile, email, platform, job_code, resume_url, experience_years, current_ctc, expected_ctc, location, qualification, skills }
+r.post('/inbound/:token', upload.single('resume'), async (req, res) => {
+  const token = await setting('inbound_token');
+  if (!token || req.params.token !== token) throw httpError(401, 'Invalid token');
+  const b = req.body || {};
+  const code = b.job_code || b.requirement_code || b.job || null;
+  const job = code ? await get(`SELECT id FROM requirements WHERE code=? OR id=?`, code, Number(code) || -1) : null;
+  const resume_path = await saveUpload(req.file);
+  const out = await createCandidate({ ...b, requirement_id: job?.id || null, source: await sourceFrom(b.platform || b.source) }, { channel: 'webhook', resume_path });
+  res.json({ ok: true, ...out });
 });
 
 // ---- joinee feedback (Step 20) ----

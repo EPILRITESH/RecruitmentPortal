@@ -1,7 +1,9 @@
 // Express app shared by both runtimes (Node.js: index.js, Cloudflare Workers: worker.js)
 import express from 'express';
-import { get, setting, setSetting } from './db.js';
-import { seedSteps } from './workflow.js';
+import crypto from 'node:crypto';
+import { get, run, setting, setSetting } from './db.js';
+import { seedSteps, STEP_DEFS, repairStuckCandidates } from './workflow.js';
+import { seedAutomations } from './automation.js';
 import { seedTemplates } from './notify.js';
 import { requireAuth } from './auth.js';
 import { bootstrap } from './seed.js';
@@ -9,15 +11,26 @@ import { readUpload } from './storage.js';
 import coreRoutes from './routes/core.js';
 import recruitRoutes from './routes/recruit.js';
 import reportRoutes from './routes/reports.js';
+import jobRoutes, { seedPlatforms } from './routes/jobs.js';
+import misRoutes from './routes/mis.js';
 import publicRoutes from './routes/public.js';
 
+const SEED_VERSION = '2';
 let ready = null;
-/** First-run seeding (steps, templates, default users). Runs once per process/isolate. */
+/** Seeding / upgrades (steps, templates, platforms, automations, default users). Runs once per process/isolate. */
 export function ensureReady() {
   ready ||= (async () => {
-    if (!(await get('SELECT code FROM steps LIMIT 1'))) await seedSteps();
-    if (!(await get('SELECT key FROM templates LIMIT 1'))) await seedTemplates();
+    if ((await setting('seed_version', '')) === SEED_VERSION) return;
+    await seedSteps();
+    // keep step options / fields in line with the code (names, TAT and doers stay as edited in Settings)
+    for (const s of STEP_DEFS) await run('UPDATE steps SET options=?, fields=? WHERE code=?', JSON.stringify(s.options), JSON.stringify(s.fields || []), s.code);
+    await seedTemplates();
+    await seedPlatforms();
+    await seedAutomations();
+    if (!(await setting('inbound_token'))) await setSetting('inbound_token', crypto.randomBytes(12).toString('hex'));
     if (!(await get('SELECT id FROM users LIMIT 1'))) await bootstrap();
+    await repairStuckCandidates();
+    await setSetting('seed_version', SEED_VERSION);
   })().catch((e) => { ready = null; throw e; });
   return ready;
 }
@@ -52,6 +65,8 @@ export function createApp() {
   });
   app.use('/api', coreRoutes);
   app.use('/api', reportRoutes);
+  app.use('/api', misRoutes);
+  app.use('/api', jobRoutes);
   app.use('/api', recruitRoutes);
   app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
   return app;

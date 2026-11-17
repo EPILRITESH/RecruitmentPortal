@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { CheckCircle2, MapPin, Briefcase } from 'lucide-react';
 import { api } from '../api';
 import { Button, Field, ErrorBox, Spinner, Modal } from '../components/ui';
@@ -13,11 +14,15 @@ export default function Careers() {
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [params] = useSearchParams();
+  const src = params.get('src') || '';
+  const jobCode = params.get('job');
 
   useEffect(() => {
     api('/public/jobs').then(setJobs);
     api('/public/info').then((i) => setCompany(i.company));
-  }, []);
+    if (jobCode) api(`/public/jobs/${encodeURIComponent(jobCode)}`).then((j) => { setJob(j); setDone(false); }).catch(() => setError('This job is closed'));
+  }, [jobCode]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -25,6 +30,7 @@ export default function Careers() {
     try {
       const form = new FormData();
       ['name', 'mobile', ...CANDIDATE_FIELDS.map(([k]) => k)].forEach((k) => f[k] && form.append(k, f[k]));
+      if (src) form.append('source', src);
       if (file) form.append('resume', file);
       await api(`/public/jobs/${job.id}/apply`, { method: 'POST', form });
       setDone(true);
@@ -43,7 +49,8 @@ export default function Careers() {
                   <span className="flex items-center gap-1"><Briefcase className="h-3.5 w-3.5" />{j.company}</span>
                   {j.location && <span className="flex items-center gap-1"><MapPin className="h-3.5 w-3.5" />{j.location}</span>}
                   {j.salary_range && <span>₹ {j.salary_range}</span>}
-                  {j.experience && <span>{j.experience}</span>}
+                  {j.experience && <span>Exp: {j.experience}{/^\d+$/.test(String(j.experience)) ? " yrs" : ""}</span>}
+                  {j.openings > 1 && <span>{j.openings} openings</span>}
                 </div>
               </div>
               <Button onClick={() => { setJob(j); setDone(false); setF({}); }}>Apply</Button>
@@ -51,7 +58,8 @@ export default function Careers() {
           ))}
         </div>
       )}
-      <Modal open={!!job} onClose={() => setJob(null)} title={`Apply – ${job?.designation}`}>
+      <Modal open={!!job} onClose={() => setJob(null)} title={`Apply – ${job?.designation}`} wide={!!job?.jd_text}>
+        {job?.jd_text && !done && <details className="mb-3 rounded-lg bg-slate-50 p-3 text-sm" open><summary className="cursor-pointer font-medium">Job description</summary><pre className="mt-2 whitespace-pre-wrap font-sans text-slate-700">{job.jd_text}</pre></details>}
         {done ? (
           <div className="py-6 text-center"><CheckCircle2 className="mx-auto h-12 w-12 text-emerald-500" /><p className="mt-3 font-medium">Application received. Our HR team will contact you.</p></div>
         ) : (

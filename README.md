@@ -71,6 +71,46 @@ Add an Anthropic API key in **Settings → AI**, or set `ANTHROPIC_API_KEY` in `
 | `#REF!`, `#N/A`, 30/12/1899 dates | Gone: everything is computed in SQL, and blank dates stay blank |
 | Swapped / blank step names, name mismatches | One official step list (Settings → Steps). You can fix a doer per step. |
 
+
+## 2b. Job posting, intake, screening and automation (added Nov 2026)
+
+**Job posting (Requirement page → Job posting).** Once the JD is approved, tick platforms and press **Post**:
+
+| Platform type | What the portal does |
+|---|---|
+| Careers page | Publishes immediately at `/careers` (each job also has its own link) |
+| Consultancies (Nilesh Barot, U N Placement, Rishi Jobs…) | Emails the JD + apply link automatically (needs an email provider), else opens it in your mail app |
+| API (any platform / Zapier / Make with an endpoint) | POSTs the job as JSON automatically |
+| Work India, Apna, LinkedIn, Naukri, Indeed | *Assisted*: these sites have no open posting API for employers, so the portal copies the post text, opens the site, and you confirm with the job link |
+| Staff reference | WhatsApp share |
+
+Posting marks **Step 1 (JD)** and **Step 2 (enquiry posted)** done with the actual time. There is also **Record manual post**.
+
+**Applications into the portal.** Every platform gets its own apply link (`/careers?job=IN-170&src=WORK%20INDIA`), so applicants land tagged with the right source. Other routes:
+- **Webhook** for platforms, Zapier or Make. The URL is in Settings → Screening & applications.
+- **Import Excel/CSV** of applicant exports. Duplicates are skipped.
+- **Upload many resumes.** The CV parser creates each candidate.
+- **Manual add**, as before.
+
+**Screening.** Auto (Settings: off / score only / score and complete Step 4 above a threshold), manual (candidate page), or bulk (tick candidates → Run screening / Accept / Reject).
+
+**Automations (Settings → Automations).** Rules such as "screening accepted → WhatsApp interest message", "interested → form link", "interview scheduled → invite + reminder the day before", "hold → email Ritesh Sir", "selected → message + consultancy email (completes Step 12)", "joined → welcome", "6-day check → feedback link", and a daily task email to every doer.
+- With the **WhatsApp Cloud API** and an **email provider** (Brevo or Resend) set in Settings → Communication, these messages go out by themselves.
+- Without them, messages wait in the **Outbox**, where each one is sent with one click.
+
+**Plan vs Actual (FMS view).** The sheet layout: rows are records, columns are steps, and each cell shows Planned, Actual and status. Click a pending cell to complete it.
+
+**MIS Dashboard** (Looker replacement), with week / month / date-range and company / platform filters:
+- Actual: Inward, Inward pending, Outward, Screening, Interview, Selection, Retention (with plan and %)
+- Actual onboarding: HR orientation, Accessories, MIS scoring, Training, 30/60-day checks
+- Plan vs Actual for every step
+- 5×3 report by week or month × platform: outward, interview and selection
+- Placement summary with names, agency and portal spend
+- Retention by joining month with names
+- Full list of outward candidates
+
+Every number opens the list of names behind it.
+
 ## 3. The workflow (single official step list)
 
 | # | Step | Doer | TAT |
@@ -159,7 +199,6 @@ server/src/
   index.js          Node.js entry (SQLite file, serves client/dist)
   storage.js        uploads → R2 / D1 / local folder
   export-d1.js      local DB → SQL file for D1
-  schema.sql        tables
   workflow.js       step definitions + engine (planned/actual/delay, outcomes, task list)
   ai.js             Claude agents: JD, CV parser, screening, outreach, assistant
   notify.js         WhatsApp / email + templates
