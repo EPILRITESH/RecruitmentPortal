@@ -1,0 +1,23 @@
+{
+  "name": "epil-recruitment-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --no-warnings --env-file-if-exists=.env src/index.js",
+    "dev": "node --no-warnings --env-file-if-exists=.env --watch src/index.js",
+    "seed": "node --no-warnings --env-file-if-exists=.env src/seed.js",
+    "import:fms": "node --no-warnings --env-file-if-exists=.env src/import-fms26.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.9.0",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "exceljs": "^4.4.0",
+    "express": "^5.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^2.5.0",
+    "nodemailer": "^10.6.0",
+    "zod": "^4.6.7"
+  }
+}
