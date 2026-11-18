@@ -219,7 +219,7 @@ r.post('/candidates/:id/message', async (req, res) => {
   if (!text) throw httpError(400, 'Message is empty');
   const out = channel === 'email'
     ? await sendEmail({ to: to || c.email, subject: subj, body: text, candidate_id: c.id, template, user: req.user })
-    : await sendWhatsApp({ to: to || c.mobile, body: text, candidate_id: c.id, template, user: req.user });
+    : await sendWhatsApp({ to: to || c.mobile, body: text, vars: body ? null : vars, candidate_id: c.id, template: body ? null : template, user: req.user });
   await logActivity('candidate', c.id, `${channel === 'email' ? 'Email' : 'WhatsApp'} ${out.status}`, template || subj, req.user.id);
   res.json(out);
 });

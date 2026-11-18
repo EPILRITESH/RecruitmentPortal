@@ -150,7 +150,7 @@ async function runRule(rule, ctx) {
         related_type: ctx.requirement_id ? 'requirement' : null, related_id: ctx.requirement_id ?? null });
     } else {
       if (!t.phone) { out.push({ to: t.name, skipped: 'no mobile' }); continue; }
-      res = await sendWhatsApp({ to: t.phone, body, candidate_id: candidate?.id, employee_id: employee?.id, template: tpl.key, automation: String(rule.id), queueIfManual: true });
+      res = await sendWhatsApp({ to: t.phone, body, vars: v, candidate_id: candidate?.id, employee_id: employee?.id, template: tpl.key, automation: String(rule.id), queueIfManual: true });
     }
     if (res.status === 'sent' && rule.complete_step && candidate) await autoComplete(candidate.id, rule.complete_step, 'Sent', `Auto: ${tpl.name} sent`);
     out.push({ to: t.name, status: res.status });

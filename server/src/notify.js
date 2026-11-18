@@ -1,6 +1,7 @@
 // Communication centre: Email (Brevo / Resend API, or SMTP on Node) + WhatsApp (Cloud API or click-to-chat link).
 // When a channel is not configured the message is kept in the Outbox (status 'queued') with a one-click link.
 import { get, run, now, setting, parse } from './db.js';
+import { smtpSend } from './smtp.js';
 
 export const DEFAULT_TEMPLATES = [
   { key: 'interest', name: 'Job opportunity – interested?', channel: 'whatsapp', subject: '',
@@ -83,10 +84,10 @@ export function waNumber(mobile) {
 }
 
 async function logMessage(m) {
-  const r = await run(`INSERT INTO messages(candidate_id, channel, to_addr, subject, body, template, status, error, user_id, created_at, automation, link, sent_at, related_type, related_id, employee_id)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  const r = await run(`INSERT INTO messages(candidate_id, channel, to_addr, subject, body, template, status, error, user_id, created_at, automation, link, sent_at, related_type, related_id, employee_id, payload)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     m.candidate_id ?? null, m.channel, m.to, m.subject ?? null, m.body, m.template ?? null, m.status, m.error ?? null, m.user?.id ?? null, now(),
-    m.automation ?? null, m.link ?? null, m.status === 'sent' ? now() : null, m.related_type ?? null, m.related_id ?? null, m.employee_id ?? null);
+    m.automation ?? null, m.link ?? null, m.status === 'sent' ? now() : null, m.related_type ?? null, m.related_id ?? null, m.employee_id ?? null, m.payload ?? null);
   return Number(r.lastInsertRowid);
 }
 
@@ -97,29 +98,46 @@ export async function emailConfigured() {
   const p = await setting('email_provider', '');
   if (p === 'brevo' || p === 'resend') return !!(await setting('email_api_key'));
   if (p === 'smtp') return !!(await setting('smtp_host'));
+  if (p === 'gmail') return !!(await setting('smtp_user')) && !!(await setting('smtp_pass'));
   return false;
 }
 
+async function waPayload(number, body, templateKey, vars) {
+  // Approved template (works any time) when mapped; otherwise free text (Meta allows it only within 24 h of the person's last message)
+  const t = templateKey ? await get('SELECT wa_template, wa_lang, wa_params FROM templates WHERE key=?', templateKey) : null;
+  if (t?.wa_template) {
+    const params = String(t.wa_params || '').split(',').map((k) => k.trim()).filter(Boolean)
+      .map((k) => ({ type: 'text', text: String(vars?.[k] ?? '-').slice(0, 1000) || '-' }));
+    return { messaging_product: 'whatsapp', to: number, type: 'template',
+      template: { name: t.wa_template, language: { code: t.wa_lang || 'en' }, ...(params.length ? { components: [{ type: 'body', parameters: params }] } : {}) } };
+  }
+  return { messaging_product: 'whatsapp', to: number, type: 'text', text: { body } };
+}
+
+async function waSend(payload) {
+  const r = await fetch(`https://graph.facebook.com/v21.0/${await setting('whatsapp_phone_id')}/messages`, {
+    method: 'POST', headers: { Authorization: `Bearer ${await setting('whatsapp_token')}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(`WhatsApp API ${r.status}: ${(await r.text()).slice(0, 200)}`);
+}
+
 /** Deliver one WhatsApp message now (Cloud API) or keep it in the Outbox with a wa.me link. */
-export async function sendWhatsApp({ to, body, candidate_id, employee_id, template, user, automation, queueIfManual = false, related_type, related_id }) {
+export async function sendWhatsApp({ to, body, candidate_id, employee_id, template, vars, user, automation, queueIfManual = false, related_type, related_id }) {
   const number = waNumber(to);
   if (!number) throw Object.assign(new Error('Mobile number missing'), { status: 400 });
   const link = `https://wa.me/${number}?text=${encodeURIComponent(body)}`;
   let status = queueIfManual ? 'queued' : 'opened-link';
   let error = null;
+  let payload = null;
   if (await whatsappConfigured()) {
     try {
-      const token = await setting('whatsapp_token');
-      const phoneId = await setting('whatsapp_phone_id');
-      const r = await fetch(`https://graph.facebook.com/v21.0/${phoneId}/messages`, {
-        method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messaging_product: 'whatsapp', to: number, type: 'text', text: { body } }),
-      });
-      if (!r.ok) throw new Error(`WhatsApp API ${r.status}: ${(await r.text()).slice(0, 200)}`);
+      payload = await waPayload(number, body, template, vars);
+      await waSend(payload);
       status = 'sent';
     } catch (e) { status = queueIfManual ? 'queued' : 'failed'; error = e.message; }
   }
-  const id = await logMessage({ candidate_id, employee_id, channel: 'whatsapp', to: number, body, template, status, error, user, automation, link, related_type, related_id });
+  const id = await logMessage({ candidate_id, employee_id, channel: 'whatsapp', to: number, body, template, status, error, user, automation, link, related_type, related_id, payload: payload ? JSON.stringify(payload) : null });
   return { id, status, link: status === 'sent' ? null : link, error };
 }
 
@@ -144,13 +162,16 @@ async function deliverEmail({ to, subject, body }) {
     if (!r.ok) throw new Error(`Resend ${r.status}: ${(await r.text()).slice(0, 200)}`);
     return;
   }
-  if (provider === 'smtp') {
-    const nodemailer = (await import('nodemailer')).default;
-    const t = nodemailer.createTransport({
-      host: await setting('smtp_host'), port: Number(await setting('smtp_port', 587)), secure: (await setting('smtp_secure', '0')) === '1',
-      auth: { user: await setting('smtp_user'), pass: await setting('smtp_pass') },
+  if (provider === 'gmail' || provider === 'smtp') {
+    // Gmail / Google Workspace: smtp.gmail.com:465 with an App Password (free, about 500 mails a day)
+    const gmail = provider === 'gmail';
+    const port = gmail ? 465 : Number(await setting('smtp_port', 587)) || 587;
+    await smtpSend({
+      host: gmail ? 'smtp.gmail.com' : await setting('smtp_host'), port,
+      security: gmail || (await setting('smtp_secure', '0')) === '1' || port === 465 ? 'tls' : 'starttls',
+      user: await setting('smtp_user'), pass: await setting('smtp_pass'),
+      from: gmail ? (await setting('smtp_user')) : from, fromName, to, subject, text: body, html,
     });
-    await t.sendMail({ from, to, subject, text: body, html });
     return;
   }
   throw new Error('Email not configured (Settings → Communication)');
@@ -181,11 +202,7 @@ export async function retryMessage(id) {
       await deliverEmail({ to: m.to_addr, subject: m.subject, body: m.body });
     } else {
       if (!(await whatsappConfigured())) return { status: m.status, link: m.link };
-      const r = await fetch(`https://graph.facebook.com/v21.0/${await setting('whatsapp_phone_id')}/messages`, {
-        method: 'POST', headers: { Authorization: `Bearer ${await setting('whatsapp_token')}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messaging_product: 'whatsapp', to: m.to_addr, type: 'text', text: { body: m.body } }),
-      });
-      if (!r.ok) throw new Error(`WhatsApp API ${r.status}`);
+      await waSend(m.payload ? JSON.parse(m.payload) : await waPayload(m.to_addr, m.body, null, null));
     }
     await run(`UPDATE messages SET status='sent', sent_at=?, error=NULL WHERE id=?`, now(), id);
     return { status: 'sent' };

@@ -82,10 +82,11 @@ r.delete('/holidays/:date', requireRole('hr'), async (req, res) => { await run('
 // ---- templates ----
 r.get('/templates', async (req, res) => res.json(await all('SELECT * FROM templates ORDER BY channel, name')));
 r.put('/templates/:key', requireRole('recruiter', 'hr'), async (req, res) => {
-  const { name, subject, body, channel } = req.body || {};
-  await run(`INSERT INTO templates(key,name,channel,subject,body) VALUES(?,?,?,?,?)
-       ON CONFLICT(key) DO UPDATE SET name=excluded.name, subject=excluded.subject, body=excluded.body, channel=excluded.channel`,
-    req.params.key, name, channel || 'whatsapp', subject || '', body);
+  const { name, subject, body, channel, wa_template, wa_lang, wa_params } = req.body || {};
+  await run(`INSERT INTO templates(key,name,channel,subject,body,wa_template,wa_lang,wa_params) VALUES(?,?,?,?,?,?,?,?)
+       ON CONFLICT(key) DO UPDATE SET name=excluded.name, subject=excluded.subject, body=excluded.body, channel=excluded.channel,
+       wa_template=excluded.wa_template, wa_lang=excluded.wa_lang, wa_params=excluded.wa_params`,
+    req.params.key, name, channel || 'whatsapp', subject || '', body, wa_template || null, wa_lang || null, wa_params || null);
   res.json({ ok: true });
 });
 
@@ -110,6 +111,12 @@ r.get('/settings', requireRole(), async (req, res) => {
   if (!out.screen_accept) out.screen_accept = '70';
   if (!out.screen_reject) out.screen_reject = '30';
   res.json(out);
+});
+r.post('/settings/test-email', requireRole(), async (req, res) => {
+  const to = String(req.body?.to || '').trim();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) return res.status(400).json({ error: 'Enter a valid email address' });
+  const { sendEmail } = await import('../notify.js');
+  res.json(await sendEmail({ to, subject: 'Test email from EPIL HR Portal', body: `This is a test email from the portal.\nIf you can read this, automatic emails are working. ✔\n\nSent by ${req.user.name}.`, template: 'test', user: req.user }));
 });
 r.put('/settings', requireRole(), async (req, res) => {
   for (const [k, v] of Object.entries(req.body || {})) {

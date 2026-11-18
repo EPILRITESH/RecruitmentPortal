@@ -44,28 +44,45 @@ function General() {
       </Card>
       <Card title="Communication – automatic WhatsApp & email" actions={<Button size="sm" icon={Save} onClick={save}>Save</Button>}>
         <div className="mb-2 text-sm font-medium text-slate-700">WhatsApp</div>
+        <div className="mb-3 rounded-lg bg-slate-50 p-3 text-xs text-slate-600">
+          <b>Free (now):</b> click-to-send – every automatic message waits in the Outbox; “Send all one by one” opens WhatsApp with the text ready, you press send.<br />
+          <b>Paid (later, fully automatic):</b> Meta WhatsApp Cloud API – business number + access token from Meta (developers.facebook.com → WhatsApp). Meta charges per message. Messages to people who have not written to you in 24 h must use an approved template – map them in Settings → Message templates.
+        </div>
         <div className="grid gap-3 sm:grid-cols-3">
-          <Field label="WhatsApp mode" hint="Cloud API = messages go out by themselves (Meta WhatsApp Business). Link = Outbox with one-click send.">
-            <Select value={f.whatsapp_mode || 'link'} onChange={set('whatsapp_mode')} options={[{ value: 'link', label: 'Click-to-send (free)' }, { value: 'cloud', label: 'WhatsApp Cloud API (automatic)' }]} />
+          <Field label="WhatsApp mode">
+            <Select value={f.whatsapp_mode || 'link'} onChange={set('whatsapp_mode')} options={[{ value: 'link', label: 'Click-to-send (free)' }, { value: 'cloud', label: 'WhatsApp Cloud API (paid, automatic)' }]} />
           </Field>
-          <Field label="Phone number ID"><input className="input" value={f.whatsapp_phone_id || ''} onChange={set('whatsapp_phone_id')} /></Field>
-          <Field label="Access token"><input className="input" type="password" value={f.whatsapp_token || ''} onChange={set('whatsapp_token')} /></Field>
+          {f.whatsapp_mode === 'cloud' && <>
+            <Field label="Phone number ID"><input className="input" value={f.whatsapp_phone_id || ''} onChange={set('whatsapp_phone_id')} /></Field>
+            <Field label="Permanent access token"><input className="input" type="password" value={f.whatsapp_token || ''} onChange={set('whatsapp_token')} /></Field>
+          </>}
         </div>
         <div className="mb-2 mt-5 text-sm font-medium text-slate-700">Email</div>
         <div className="grid gap-3 sm:grid-cols-3">
-          <Field label="Email provider" hint="Brevo (free 300/day) or Resend work on Cloudflare. SMTP only when running on your own server.">
-            <Select value={f.email_provider || ''} onChange={set('email_provider')} placeholder="Not set – use Outbox" options={[{ value: 'brevo', label: 'Brevo API' }, { value: 'resend', label: 'Resend API' }, { value: 'smtp', label: 'SMTP (Node server only)' }]} />
+          <Field label="Email provider" hint="Gmail / Google Workspace and Brevo are free. Resend / SMTP for later.">
+            <Select value={f.email_provider || ''} onChange={set('email_provider')} placeholder="Not set – use Outbox" options={[
+              { value: 'gmail', label: 'Gmail / Google Workspace (free, ~500/day)' }, { value: 'brevo', label: 'Brevo API (free 300/day)' },
+              { value: 'resend', label: 'Resend API (paid / 100 a day free)' }, { value: 'smtp', label: 'Any SMTP server' }]} />
           </Field>
-          <Field label="Provider API key"><input className="input" type="password" value={f.email_api_key || ''} onChange={set('email_api_key')} /></Field>
-          <Field label="From address" hint="Must be verified with the provider"><input className="input" value={f.smtp_from || ''} onChange={set('smtp_from')} placeholder="hr@yourdomain.com" /></Field>
+          {f.email_provider === 'gmail' && <>
+            <Field label="Gmail / Workspace address" hint="Mails go out from this address"><input className="input" value={f.smtp_user || ''} onChange={set('smtp_user')} placeholder="recruiter@yourcompany.com" /></Field>
+            <Field label="App password (16 letters)" hint="Google Account → Security → 2-Step Verification ON → App passwords → create “EPIL portal”"><input className="input" type="password" value={f.smtp_pass || ''} onChange={set('smtp_pass')} /></Field>
+          </>}
+          {(f.email_provider === 'brevo' || f.email_provider === 'resend') && <>
+            <Field label="Provider API key"><input className="input" type="password" value={f.email_api_key || ''} onChange={set('email_api_key')} /></Field>
+            <Field label="From address" hint="Must be verified with the provider"><input className="input" value={f.smtp_from || ''} onChange={set('smtp_from')} placeholder="hr@yourdomain.com" /></Field>
+          </>}
           {f.email_provider === 'smtp' && <>
             <Field label="SMTP host"><input className="input" value={f.smtp_host || ''} onChange={set('smtp_host')} /></Field>
-            <Field label="SMTP port"><input className="input" value={f.smtp_port || ''} onChange={set('smtp_port')} /></Field>
-            <Field label="SSL (465)"><Select value={f.smtp_secure || '0'} onChange={set('smtp_secure')} options={[{ value: '0', label: 'No' }, { value: '1', label: 'Yes' }]} /></Field>
+            <Field label="SMTP port"><input className="input" value={f.smtp_port || ''} onChange={set('smtp_port')} placeholder="465 or 587" /></Field>
+            <Field label="SSL (465)"><Select value={f.smtp_secure || '0'} onChange={set('smtp_secure')} options={[{ value: '0', label: 'No (STARTTLS 587)' }, { value: '1', label: 'Yes (465)' }]} /></Field>
             <Field label="SMTP user"><input className="input" value={f.smtp_user || ''} onChange={set('smtp_user')} /></Field>
             <Field label="SMTP password"><input className="input" type="password" value={f.smtp_pass || ''} onChange={set('smtp_pass')} /></Field>
+            <Field label="From address"><input className="input" value={f.smtp_from || ''} onChange={set('smtp_from')} /></Field>
           </>}
         </div>
+        {f.email_provider && <div className="mt-3 flex items-center gap-2"><input className="input max-w-xs" placeholder="Send a test email to…" value={f._test_to || ''} onChange={set('_test_to')} />
+          <Button size="sm" variant="secondary" onClick={async () => { await save(); try { const r = await api('/settings/test-email', { method: 'POST', body: { to: f._test_to } }); toast(r.status === 'sent' ? 'Test email sent ✔' : `Not sent: ${r.error}`, r.status === 'sent' ? 'ok' : 'error'); } catch (e) { toast(e.message, 'error'); } }}>Save & send test</Button></div>}
       </Card>
       <Card title="Screening & applications" actions={<Button size="sm" icon={Save} onClick={save}>Save</Button>}>
         <div className="grid gap-3 sm:grid-cols-4">
@@ -216,6 +233,11 @@ function Templates() {
             actions={edit[t.key] && <Button size="sm" onClick={async () => { await api(`/templates/${t.key}`, { method: 'PUT', body: e }); toast('Template saved'); setEdit({ ...edit, [t.key]: undefined }); reload(); }}>Save</Button>}>
             {t.channel === 'email' && <input className="input mb-2" value={e.subject} onChange={(x) => setEdit({ ...edit, [t.key]: { ...e, subject: x.target.value } })} />}
             <textarea className="input font-mono text-[13px]" rows={t.channel === 'email' ? 8 : 3} value={e.body} onChange={(x) => setEdit({ ...edit, [t.key]: { ...e, body: x.target.value } })} />
+            {t.channel === 'whatsapp' && <div className="mt-2 grid gap-2 sm:grid-cols-3">
+              <Field label="Meta approved template name (Cloud API)" hint="Leave empty for free click-to-send"><input className="input" value={e.wa_template || ''} onChange={(x) => setEdit({ ...edit, [t.key]: { ...e, wa_template: x.target.value } })} placeholder="e.g. interview_invite" /></Field>
+              <Field label="Language code"><input className="input" value={e.wa_lang || ''} onChange={(x) => setEdit({ ...edit, [t.key]: { ...e, wa_lang: x.target.value } })} placeholder="en" /></Field>
+              <Field label="Variables for {{1}}, {{2}}…" hint="Comma separated, in order"><input className="input" value={e.wa_params || ''} onChange={(x) => setEdit({ ...edit, [t.key]: { ...e, wa_params: x.target.value } })} placeholder="name,designation,company,interview_at" /></Field>
+            </div>}
           </Card>
         );
       })}
