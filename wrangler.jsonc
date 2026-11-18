@@ -8,6 +8,8 @@
   "upload_source_maps": true,
   // hourly: interview reminders + morning task digest (server/src/automation.js runHourly)
   "triggers": { "crons": ["15 * * * *"] },
+  // free AI for the recruitment agents (Settings → AI → provider)
+  "ai": { "binding": "AI" },
   "d1_databases": [
     {
       "binding": "DB",

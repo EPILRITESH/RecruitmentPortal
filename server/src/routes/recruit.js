@@ -252,7 +252,12 @@ r.post('/ai/ask', async (req, res) => {
   if (!q) throw httpError(400, 'Ask a question');
   const snapshot = await dashboardData({});
   snapshot.overdue = (await listTasks({ scope: 'all', when: 'overdue' })).slice(0, 60).map((t) => ({ step: t.short_name, record: t.record_code, title: t.title, planned: t.planned_at, overdue_hours: t.overdue_hours, doer: t.doer_role }));
-  snapshot.open_requirements = await all(`SELECT code, designation, company, openings, filled, priority, request_date, requirement_by FROM requirements WHERE status='Open' ORDER BY id DESC LIMIT 60`);
+  snapshot.open_requirements = await all(`SELECT code, designation, company, openings, filled, priority, request_date, requirement_by,
+    CAST(julianday(?) - julianday(request_date) AS INTEGER) AS days_open,
+    (SELECT COUNT(*) FROM candidates c WHERE c.requirement_id=requirements.id) AS candidates
+    FROM requirements WHERE status='Open' ORDER BY days_open DESC LIMIT 60`, now().slice(0, 10));
+  // keep the snapshot compact so smaller (free) models can read all of it
+  delete snapshot.steps; delete snapshot.retention; delete snapshot.monthly;
   snapshot.today = now();
   res.json(await askAssistant(q, snapshot, req.user));
 });

@@ -30,7 +30,7 @@ export default function RequirementDetail() {
     try {
       const out = await api(`/requirements/${id}/generate-jd`, { method: 'POST' });
       setJd(out.text); setPost(out.job_post_short);
-      toast(out._mode === 'claude' ? 'JD written by AI – review & save' : 'Template JD created (AI offline)');
+      toast(out._mode !== 'offline' ? 'JD written by AI – review & save' : 'Template JD created (AI offline)');
     } catch (e) { setJdErr(e.message); } finally { setGen(false); }
   };
   const saveJd = async (jd_status) => {

@@ -1,5 +1,6 @@
 // Cloudflare Workers entry.
 //   env.DB     -> D1 database
+//   env.AI     -> Cloudflare Workers AI (free AI provider for the agents)
 //   env.FILES  -> R2 bucket for resumes / invoices (optional – without it files are kept in D1)
 //   React app  -> client/dist packed into static-bundle.js (npm run build:worker)
 // Secrets: ANTHROPIC_API_KEY, JWT_SECRET (wrangler secret put ...)
@@ -10,9 +11,11 @@ import { useR2, useD1Files } from './storage.js';
 import { createApp, errorHandler, ensureReady } from './app.js';
 import { setBackground } from './candidates.js';
 import { runHourly } from './automation.js';
+import { setWorkersAI } from './ai.js';
 import STATIC from './static-bundle.js';
 
 useD1(env.DB);
+setWorkersAI(env.AI); // free Cloudflare Workers AI for the agents
 setBackground((p) => waitUntil(p.catch((e) => console.error('[background]', e.message))));
 if (env.FILES) useR2(env.FILES);
 else useD1Files(env.DB);

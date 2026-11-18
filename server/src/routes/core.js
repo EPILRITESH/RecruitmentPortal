@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { all, get, run, now, setting, setSetting } from '../db.js';
 import { requireAuth, requireRole, hashPassword, checkPassword, signToken, ROLES } from '../auth.js';
 import { getSteps } from '../workflow.js';
-import { AGENTS, aiAvailable } from '../ai.js';
+import { AGENTS, aiAvailable, provider, WORKERS_MODEL } from '../ai.js';
 
 const r = Router();
 
@@ -92,7 +92,7 @@ r.put('/templates/:key', requireRole('recruiter', 'hr'), async (req, res) => {
 // ---- settings ----
 const PUBLIC_SETTINGS = ['company_name', 'office_address', 'public_url', 'work_start_hour', 'work_end_hour', 'weekly_off', 'whatsapp_mode', 'whatsapp_phone_id',
   'smtp_host', 'smtp_port', 'smtp_user', 'smtp_from', 'smtp_secure', 'ai_model', 'escalation_hours', 'email_provider',
-  'auto_screen', 'screen_accept', 'screen_reject', 'auto_reject', ...Object.keys(AGENTS).map((a) => `ai_enabled_${a}`)];
+  'auto_screen', 'screen_accept', 'screen_reject', 'auto_reject', 'ai_provider', 'ai_workers_model', ...Object.keys(AGENTS).map((a) => `ai_enabled_${a}`)];
 const SECRET_SETTINGS = ['anthropic_api_key', 'smtp_pass', 'whatsapp_token', 'email_api_key'];
 
 r.get('/settings', requireRole(), async (req, res) => {
@@ -100,6 +100,8 @@ r.get('/settings', requireRole(), async (req, res) => {
   for (const k of PUBLIC_SETTINGS) out[k] = await setting(k, '');
   for (const k of SECRET_SETTINGS) out[k] = (await setting(k)) ? '••••••••' : '';
   out.ai_available = await aiAvailable();
+  out.ai_provider = await provider();
+  out.ai_workers_default = WORKERS_MODEL;
   out.ai_env_key = !!process.env.ANTHROPIC_API_KEY;
   out.agents = AGENTS;
   out.inbound_url = `${await setting('public_url', '')}/api/public/inbound/${await setting('inbound_token', '')}`;

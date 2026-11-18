@@ -23,11 +23,18 @@ function General() {
           <Field label="Escalate after (hours late)"><input type="number" className="input" value={f.escalation_hours || ''} onChange={set('escalation_hours')} /></Field>
         </div>
       </Card>
-      <Card title="AI agents (Claude)" actions={<Button size="sm" icon={Save} onClick={save}>Save</Button>}>
-        <div className="mb-3 text-sm">Status: {f.ai_available ? <Badge color="green">connected</Badge> : <Badge color="amber">offline – add API key</Badge>} {f.ai_env_key && <span className="text-xs text-slate-400">(key from environment variable)</span>}</div>
-        <div className="grid gap-3 sm:grid-cols-2">
+      <Card title="AI agents" actions={<Button size="sm" icon={Save} onClick={save}>Save</Button>}>
+        <div className="mb-3 text-sm">Status: {f.ai_available ? <Badge color="green">connected</Badge> : <Badge color="amber">offline – choose a provider</Badge>} {f.ai_env_key && <span className="text-xs text-slate-400">(key from environment variable)</span>}</div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Field label="AI provider" hint="Workers AI runs on your Cloudflare account, free up to the daily limit. Claude gives the best quality but needs Anthropic credits.">
+            <Select value={f.ai_provider || 'workers'} onChange={set('ai_provider')} options={[{ value: 'workers', label: 'Cloudflare Workers AI (free)' }, { value: 'claude', label: 'Claude – Anthropic (paid, best)' }]} />
+          </Field>
+          {(f.ai_provider || 'workers') === 'workers' && <Field label="Workers AI model" hint="Leave blank for the default"><input className="input" value={f.ai_workers_model || ''} onChange={set('ai_workers_model')} placeholder={f.ai_workers_default} /></Field>}
+          <div />
+        </div>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
           <Field label="Anthropic API key" hint="Stored in the database. Leave •••• to keep the current key."><input className="input" type="password" value={f.anthropic_api_key || ''} onChange={set('anthropic_api_key')} placeholder="sk-ant-…" /></Field>
-          <Field label="Model"><input className="input" value={f.ai_model || ''} onChange={set('ai_model')} /></Field>
+          <Field label="Claude model"><input className="input" value={f.ai_model || ''} onChange={set('ai_model')} /></Field>
         </div>
         <div className="mt-3 flex flex-wrap gap-4">
           {Object.entries(f.agents || {}).map(([k, label]) => (

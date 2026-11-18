@@ -1,4 +1,4 @@
-// Recruitment AI agents (Claude). Every agent has an offline fallback so the portal
+// Recruitment AI agents (Claude or free Cloudflare Workers AI). Every agent has an offline fallback so the portal
 // keeps working without an API key – the AI just makes each step faster.
 import Anthropic from '@anthropic-ai/sdk';
 import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
@@ -16,7 +16,17 @@ export const AGENTS = {
 async function apiKey() {
   return process.env.ANTHROPIC_API_KEY || (await setting('anthropic_api_key')) || '';
 }
-export const aiAvailable = async () => !!(await apiKey());
+
+// Two providers: Claude (Anthropic API, needs credits) or Cloudflare Workers AI (free daily allowance, binding env.AI)
+let workersAI = null;
+export function setWorkersAI(binding) { workersAI = binding || null; }
+export const WORKERS_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+export async function provider() {
+  const p = await setting('ai_provider', '');
+  if (p === 'claude' || p === 'workers') return p;
+  return workersAI ? 'workers' : 'claude';
+}
+export const aiAvailable = async () => ((await provider()) === 'workers' ? !!workersAI : !!(await apiKey()));
 // on unless it was switched off explicitly ('0'); empty values from older saves count as on
 export const agentEnabled = async (agent) => (await setting(`ai_enabled_${agent}`, '1')) !== '0';
 const model = async () => (await setting('ai_model', 'claude-opus-5-5')) || 'claude-opus-5-5';
@@ -37,6 +47,52 @@ async function callClaude({ system, content, schema, effort = 'medium' }) {
   return response.parsed_output;
 }
 
+/** Content blocks (text / PDF / image) -> plain text for Workers AI. PDFs are converted with the free toMarkdown. */
+async function contentToText(content) {
+  if (typeof content === 'string') return content;
+  const parts = [];
+  for (const b of content) {
+    if (b.type === 'text') parts.push(b.text);
+    else if (b.type === 'document') {
+      const out = await workersAI.toMarkdown({ name: 'resume.pdf', blob: new Blob([Buffer.from(b.source.data, 'base64')], { type: 'application/pdf' }) });
+      const r = Array.isArray(out) ? out[0] : out;
+      if (r?.format === 'error' || !r?.data) throw new Error(`Could not read the PDF${r?.error ? `: ${r.error}` : ''}`);
+      parts.push(`Resume text:\n${r.data.replace(/## Metadata[\s\S]*?## Contents/, '').slice(0, 14000)}`);
+    } else if (b.type === 'image') {
+      throw new Error('Photo / scanned resumes need the Claude provider – upload a PDF or Word file');
+    }
+  }
+  return parts.join('\n\n');
+}
+
+async function callWorkersAI({ system, content, schema }) {
+  if (!workersAI) throw new Error('Workers AI is only available on Cloudflare');
+  const jsonSchema = z.toJSONSchema(schema);
+  delete jsonSchema.$schema;
+  const text = (await contentToText(content)).slice(0, 30000);
+  const res = await workersAI.run((await setting('ai_workers_model', '')) || WORKERS_MODEL, {
+    messages: [
+      { role: 'system', content: `${system}\nReply only with JSON that matches the requested schema.` },
+      { role: 'user', content: text },
+    ],
+    response_format: { type: 'json_schema', json_schema: jsonSchema },
+    max_tokens: 2500,
+  });
+  let out = res?.response ?? res;
+  if (typeof out === 'string') {
+    const m = out.match(/\{[\s\S]*\}/);
+    out = JSON.parse(m ? m[0] : out);
+  }
+  const parsed = schema.safeParse(out);
+  if (!parsed.success) throw new Error('Free AI model returned an unexpected format – please try again');
+  return parsed.data;
+}
+
+/** One entry point for every agent */
+async function callModel(args) {
+  return (await provider()) === 'workers' ? callWorkersAI(args) : callClaude(args);
+}
+
 function logRun(agent, entity_type, entity_id, input, output, mode, user_id) {
   return run('INSERT INTO ai_runs(agent, entity_type, entity_id, input, output, mode, user_id, created_at) VALUES(?,?,?,?,?,?,?,?)',
     agent, entity_type ?? null, entity_id ?? null, JSON.stringify(input).slice(0, 4000), JSON.stringify(output).slice(0, 8000), mode, user_id ?? null, now());
@@ -46,8 +102,9 @@ async function withFallback(agent, ctx, claudeFn, offlineFn) {
   if ((await aiAvailable()) && (await agentEnabled(agent))) {
     try {
       const out = await claudeFn();
-      await logRun(agent, ctx.entity_type, ctx.entity_id, ctx.input, out, 'claude', ctx.user_id);
-      return { ...out, _mode: 'claude' };
+      const mode = (await provider()) === 'workers' ? 'workers-ai' : 'claude';
+      await logRun(agent, ctx.entity_type, ctx.entity_id, ctx.input, out, mode, ctx.user_id);
+      return { ...out, _mode: mode };
     } catch (e) {
       console.error(`[ai:${agent}]`, e.message);
       const out = offlineFn();
@@ -107,7 +164,7 @@ function jdToText(jd, r) {
 export async function generateJD(r, user) {
   const input = { designation: r.designation, company: r.company, salary: r.salary_range, experience: r.experience, qualification: r.qualification, skills: r.skills, notes: r.notes, location: r.location };
   const out = await withFallback('jd', { entity_type: 'requirement', entity_id: r.id, input, user_id: user?.id },
-    () => callClaude({
+    () => callModel({
       system: `${COMPANY_CONTEXT}\nYou are the JD Generator agent. Produce a practical, honest job description for the vacancy. 5-8 responsibilities, 4-7 requirements. Do not invent benefits beyond standard ones (salary, PF/ESIC where applicable, growth, training) unless the notes mention them.`,
       content: `Vacancy details (JSON):\n${JSON.stringify(input, null, 2)}`,
       schema: JDSchema,
@@ -136,8 +193,8 @@ const CVSchema = z.object({
   email: z.string(),
   current_company: z.string(),
   experience_years: z.number(),
-  current_ctc: z.string(),
-  expected_ctc: z.string(),
+  current_ctc: z.string().describe('current monthly salary as plain digits, e.g. 22000; empty if not mentioned'),
+  expected_ctc: z.string().describe('expected monthly salary as plain digits, e.g. 27000; empty if not mentioned'),
   notice_period: z.string(),
   location: z.string(),
   qualification: z.string(),
@@ -148,13 +205,17 @@ const CVSchema = z.object({
 export async function parseCV({ buffer, mimetype, text }, user) {
   const input = { mimetype, size: buffer?.length, textLen: text?.length };
   return withFallback('cv', { input, user_id: user?.id },
-    () => {
+    async () => {
       const content = [];
       if (mimetype === 'application/pdf') content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: buffer.toString('base64') } });
       else if (/^image\/(png|jpeg|webp|gif)$/.test(mimetype || '')) content.push({ type: 'image', source: { type: 'base64', media_type: mimetype, data: buffer.toString('base64') } });
-      else content.push({ type: 'text', text: `Resume text:\n${text || buffer?.toString('utf8') || ''}` });
+      else if (workersAI && buffer && /word|officedocument|msword|rtf|opendocument/.test(mimetype || '')) {
+        const out = await workersAI.toMarkdown({ name: 'resume.docx', blob: new Blob([buffer], { type: mimetype }) });
+        const r = Array.isArray(out) ? out[0] : out;
+        content.push({ type: 'text', text: `Resume text:\n${(r?.data || '').slice(0, 14000)}` });
+      } else content.push({ type: 'text', text: `Resume text:\n${text || buffer?.toString('utf8') || ''}` });
       content.push({ type: 'text', text: 'Extract the candidate details from this resume. Use empty string / 0 when a value is missing. Never guess a phone number.' });
-      return callClaude({ system: `${COMPANY_CONTEXT}\nYou are the CV Parser agent.`, content, schema: CVSchema, effort: 'low' });
+      return callModel({ system: `${COMPANY_CONTEXT}\nYou are the CV Parser agent.`, content, schema: CVSchema, effort: 'low' });
     },
     () => offlineParse(text || (mimetype?.startsWith('text') ? buffer?.toString('utf8') : '')));
 }
@@ -185,7 +246,7 @@ export async function screenCandidate(c, r, user) {
     candidate: { name: c.name, experience_years: c.experience_years, current_company: c.current_company, current_ctc: c.current_ctc, expected_ctc: c.expected_ctc, notice_period: c.notice_period, location: c.location, qualification: c.qualification, skills: c.skills, resume: c.resume_text?.slice(0, 8000) },
   };
   return withFallback('screen', { entity_type: 'candidate', entity_id: c.id, input, user_id: user?.id },
-    () => callClaude({
+    () => callModel({
       system: `${COMPANY_CONTEXT}\nYou are the Screening agent. Score the candidate against the job fairly using only job-relevant facts (skills, experience, qualification, salary fit, notice period, location). Never use gender, religion, caste, age or marital status. Be concise.`,
       content: JSON.stringify(input, null, 2),
       schema: ScreenSchema,
@@ -220,7 +281,7 @@ const MsgSchema = z.object({ subject: z.string(), body: z.string() });
 export async function draftMessage({ purpose, channel, candidate, requirement, language = 'English' }, user) {
   const input = { purpose, channel, language, candidate: { name: candidate?.name, interview_at: candidate?.interview_at, joining_date: candidate?.joining_date }, job: requirement ? { designation: requirement.designation, company: requirement.company, salary: requirement.salary_range } : null };
   return withFallback('message', { entity_type: 'candidate', entity_id: candidate?.id, input, user_id: user?.id },
-    () => callClaude({
+    () => callModel({
       system: `${COMPANY_CONTEXT}\nYou are the Outreach agent. Write a short, polite ${channel} message from the EPIL HR team. ${channel === 'whatsapp' ? 'Max 500 characters, no subject needed (return empty subject).' : 'Professional email with a subject.'} Language: ${language}.`,
       content: JSON.stringify(input),
       schema: MsgSchema,
@@ -232,15 +293,20 @@ export async function draftMessage({ purpose, channel, candidate, requirement, l
 // ---------------------------------------------------------------------------
 // 5. Recruitment Assistant – answers questions over a live data snapshot
 // ---------------------------------------------------------------------------
-const AskSchema = z.object({ answer: z.string(), suggested_actions: z.array(z.string()) });
+const AskSchema = z.object({
+  answer: z.string().describe('one or two sentence summary'),
+  items: z.array(z.string()).describe('each matching record on its own entry, e.g. "IN-170 Accountant – EPIL Kosamba: 45 days open, 3 candidates"'),
+  suggested_actions: z.array(z.string()),
+});
 export async function askAssistant(question, snapshot, user) {
   return withFallback('assistant', { input: { question }, user_id: user?.id },
-    () => callClaude({
-      system: `${COMPANY_CONTEXT}\nYou are the Recruitment Assistant for the HR team. Answer using ONLY the data snapshot provided (it is live data from the portal). Give numbers, names and IDs where useful. Keep answers short, use bullet points. Then suggest up to 4 concrete next actions.`,
+    () => callModel({
+      system: `${COMPANY_CONTEXT}\nYou are the Recruitment Assistant for the HR team. Answer using ONLY the data snapshot provided (it is live data from the portal). Write a one or two sentence summary in answer, and put every matching record in items (code, name and the relevant number such as days_open). Then suggest up to 4 concrete next actions.`,
       content: `Data snapshot (JSON):\n${JSON.stringify(snapshot)}\n\nQuestion: ${question}`,
       schema: AskSchema,
     }),
     () => ({
+      items: [],
       answer: `AI is offline. Quick facts: ${snapshot.kpis.open_requirements} open requirements, ${snapshot.kpis.active_candidates} active candidates, ${snapshot.kpis.overdue_tasks} overdue tasks, ${snapshot.kpis.joined_this_month} joined this month.`,
       suggested_actions: ['Clear overdue tasks from the Rescue Board', 'Add an Anthropic API key in Settings → AI to enable the assistant'],
     }));

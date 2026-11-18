@@ -94,7 +94,7 @@ export function CandidateForm({ open, onClose, onSaved, requirementId }) {
         notice_period: p.notice_period || x.notice_period, location: p.location || x.location, qualification: p.qualification || x.qualification,
         skills: p.skills?.length ? p.skills.join(', ') : x.skills, resume_text: p.summary,
       }));
-      setParsedNote(p._mode === 'claude' ? '✨ Details filled by the AI CV Parser – please check.' : p.summary);
+      setParsedNote(p._mode !== 'offline' ? '✨ Details filled by the AI CV Parser – please check.' : p.summary);
     } catch (e) { setParsedNote(e.message); } finally { setParsing(false); }
   };
 
