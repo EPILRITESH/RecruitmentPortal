@@ -17,7 +17,8 @@ async function apiKey() {
   return process.env.ANTHROPIC_API_KEY || (await setting('anthropic_api_key')) || '';
 }
 export const aiAvailable = async () => !!(await apiKey());
-export const agentEnabled = async (agent) => (await setting(`ai_enabled_${agent}`, '1')) === '1';
+// on unless it was switched off explicitly ('0'); empty values from older saves count as on
+export const agentEnabled = async (agent) => (await setting(`ai_enabled_${agent}`, '1')) !== '0';
 const model = async () => (await setting('ai_model', 'claude-opus-5-5')) || 'claude-opus-5-5';
 
 async function callClaude({ system, content, schema, effort = 'medium' }) {

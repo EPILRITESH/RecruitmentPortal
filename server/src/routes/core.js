@@ -104,6 +104,7 @@ r.get('/settings', requireRole(), async (req, res) => {
   out.agents = AGENTS;
   out.inbound_url = `${await setting('public_url', '')}/api/public/inbound/${await setting('inbound_token', '')}`;
   if (!out.auto_screen) out.auto_screen = 'score';
+  for (const a of Object.keys(AGENTS)) if (out[`ai_enabled_${a}`] !== '0') out[`ai_enabled_${a}`] = '1';
   if (!out.screen_accept) out.screen_accept = '70';
   if (!out.screen_reject) out.screen_reject = '30';
   res.json(out);
